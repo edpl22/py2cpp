@@ -13,16 +13,24 @@ from py2cpp.diagnostics import SourceLocation
 from py2cpp.ir.nodes import (
     BinaryOp,
     IRBinaryExpr,
+    IRDictLiteral,
+    IRForEach,
     IRFunction,
+    IRIndex,
+    IRListCompRange,
+    IRListLiteral,
+    IRLiteral,
     IRModule,
     IRParameter,
     IRPrintStmt,
     IRReturn,
     IRStringLiteral,
     IRToStr,
+    IRTupleIndex,
+    IRTupleLiteral,
     IRVarRef,
 )
-from py2cpp.types.model import IntType, StringType
+from py2cpp.types.model import DictType, IntType, ListType, StringType, TupleType
 
 _LOCATION = SourceLocation(filename=Path("test.py"), line=1, column=1)
 
@@ -140,3 +148,162 @@ def test_emits_to_str_conversion() -> None:
     output = emit_module(module)
 
     assert "return pyrt::str(n);" in output
+
+
+def test_emits_list_literal_using_deque_storage() -> None:
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRPrintStmt(
+                args=(
+                    IRListLiteral(
+                        elements=(
+                            IRLiteral(value=1, type=IntType()),
+                            IRLiteral(value=2, type=IntType()),
+                        ),
+                        type=ListType(IntType()),
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "pyrt::List<std::int64_t>(std::deque<std::int64_t>{1, 2})" in output
+
+
+def test_emits_dict_literal() -> None:
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRPrintStmt(
+                args=(
+                    IRDictLiteral(
+                        keys=(IRStringLiteral(value="a", type=StringType()),),
+                        values=(IRLiteral(value=1, type=IntType()),),
+                        type=DictType(StringType(), IntType()),
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    expected = (
+        "pyrt::Dict<pyrt::Str, std::int64_t>("
+        'std::vector<std::pair<pyrt::Str, std::int64_t>>{{pyrt::Str("a"), 1}})'
+    )
+    assert expected in output
+
+
+def test_emits_tuple_literal_and_get_indexing() -> None:
+    tuple_type = TupleType((IntType(), StringType()))
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRPrintStmt(
+                args=(
+                    IRTupleIndex(
+                        tuple_expr=IRTupleLiteral(
+                            elements=(
+                                IRLiteral(value=1, type=IntType()),
+                                IRStringLiteral(value="a", type=StringType()),
+                            ),
+                            type=tuple_type,
+                        ),
+                        index=1,
+                        type=StringType(),
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "std::get<1>(std::tuple<std::int64_t, pyrt::Str>(1, pyrt::Str(\"a\")))" in output
+
+
+def test_emits_list_index_as_at_call() -> None:
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRPrintStmt(
+                args=(
+                    IRIndex(
+                        container=IRVarRef(name="values", type=ListType(IntType())),
+                        index=IRLiteral(value=0, type=IntType()),
+                        type=IntType(),
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "values.at(0)" in output
+
+
+def test_emits_for_each_over_dict_binds_first() -> None:
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRForEach(
+                var="k",
+                var_type=StringType(),
+                iterable=IRVarRef(name="ages", type=DictType(StringType(), IntType())),
+                body=(
+                    IRPrintStmt(
+                        args=(IRVarRef(name="k", type=StringType()),), location=_LOCATION
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "for (const auto& __pyrt_pair : ages) {" in output
+    assert "pyrt::Str k = __pyrt_pair.first;" in output
+
+
+def test_emits_list_comp_range_as_iife() -> None:
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRPrintStmt(
+                args=(
+                    IRListCompRange(
+                        element=IRVarRef(name="x", type=IntType()),
+                        var="x",
+                        start=IRLiteral(value=0, type=IntType()),
+                        stop=IRLiteral(value=5, type=IntType()),
+                        step=1,
+                        condition=None,
+                        type=ListType(IntType()),
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "pyrt::List<std::int64_t>([&]() {" in output
+    assert "__pyrt_result.push_back(x);" in output
+    assert "return __pyrt_result;" in output

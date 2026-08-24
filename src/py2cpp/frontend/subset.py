@@ -26,11 +26,22 @@ silently applied):
 - a 'for' loop's 'step' argument, when given, must be a compile-time
   integer literal, so the loop's direction (< vs >) can be chosen
   statically instead of needing a runtime branch.
+- list/dict/set literals must be non-empty: with no elements, there is
+  nothing to infer an element/key/value type from, and this milestone
+  does not thread an expected-type hint in from an annotated target the
+  way e.g. a plain int literal never needs one.
+- comprehensions support exactly one 'for' clause and at most one 'if'
+  clause -- multi-clause/nested comprehensions are a future milestone.
+- container mutation ('.append(...)', 'd[k] = v'), 'in'/'not in', tuple
+  unpacking in a 'for' target, and iterating a tuple are all deferred;
+  containers this milestone are built via literals/comprehensions and
+  read via indexing/iteration only.
 """
 
 from __future__ import annotations
 
 import ast
+from typing import TypeGuard
 
 from py2cpp import codes
 from py2cpp.diagnostics import DiagnosticEngine, SourceLocation
@@ -153,14 +164,23 @@ class _SubsetValidator(ast.NodeVisitor):
             self._reject(node, "'for ... else' is not supported")
         if not isinstance(node.target, ast.Name):
             self._reject(node.target, "the loop variable must be a plain name")
-        if not (
-            isinstance(node.iter, ast.Call)
-            and isinstance(node.iter.func, ast.Name)
-            and node.iter.func.id == "range"
-        ):
-            self._reject(node.iter, "'for' is only supported over 'range(...)' in this milestone")
+        if self._is_range_call(node.iter):
+            self._validate_range_call(node.iter)
             return
-        range_call = node.iter
+        # Not a 'range(...)' call: validated as a general container
+        # expression here; whether it's actually an iterable type (and,
+        # for a dict, that iteration yields keys) is a semantic question
+        # resolved later, in ir/lower.py.
+        self._validate_expr(node.iter)
+
+    def _is_range_call(self, node: ast.expr) -> TypeGuard[ast.Call]:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "range"
+        )
+
+    def _validate_range_call(self, range_call: ast.Call) -> None:
         if range_call.keywords or not (1 <= len(range_call.args) <= 3):
             self._reject(range_call, "'range' takes 1 to 3 positional arguments")
             return
@@ -172,6 +192,34 @@ class _SubsetValidator(ast.NodeVisitor):
                     "'range' step must be a literal integer constant in this milestone",
                     help_text="a runtime-computed step arrives in a later milestone",
                 )
+
+    def _validate_comprehension(self, node: ast.ListComp) -> None:
+        if len(node.generators) != 1:
+            self._reject(
+                node,
+                "comprehensions with more than one 'for' clause are not supported "
+                "in this milestone",
+            )
+            return
+        generator = node.generators[0]
+        if generator.is_async:
+            self._reject(node, "async comprehensions are not supported")
+            return
+        if not isinstance(generator.target, ast.Name):
+            self._reject(generator.target, "the comprehension variable must be a plain name")
+        if self._is_range_call(generator.iter):
+            self._validate_range_call(generator.iter)
+        else:
+            self._validate_expr(generator.iter)
+        if len(generator.ifs) > 1:
+            self._reject(
+                node,
+                "comprehensions with more than one 'if' clause are not supported "
+                "in this milestone",
+            )
+        for condition in generator.ifs:
+            self._validate_expr(condition)
+        self._validate_expr(node.elt)
 
     def _validate_fstring(self, node: ast.JoinedStr) -> None:
         for value in node.values:
@@ -213,6 +261,36 @@ class _SubsetValidator(ast.NodeVisitor):
                 )
         elif isinstance(node, ast.JoinedStr):
             self._validate_fstring(node)
+        elif isinstance(node, (ast.List, ast.Set)):
+            if not node.elts:
+                self._reject(
+                    node,
+                    "an empty list/set literal is not supported in this milestone "
+                    "(its element type can't be inferred)",
+                )
+            for element in node.elts:
+                self._validate_expr(element)
+        elif isinstance(node, ast.Tuple):
+            for element in node.elts:
+                self._validate_expr(element)
+        elif isinstance(node, ast.Dict):
+            if not node.keys:
+                self._reject(
+                    node,
+                    "an empty dict literal is not supported in this milestone "
+                    "(its key/value types can't be inferred)",
+                )
+            for key, value in zip(node.keys, node.values, strict=True):
+                if key is None:
+                    self._reject(value, "'**' unpacking in a dict literal is not supported")
+                    continue
+                self._validate_expr(key)
+                self._validate_expr(value)
+        elif isinstance(node, ast.Subscript):
+            self._validate_expr(node.value)
+            self._validate_expr(node.slice)
+        elif isinstance(node, ast.ListComp):
+            self._validate_comprehension(node)
         elif isinstance(node, ast.Name):
             pass
         elif isinstance(node, ast.BinOp):

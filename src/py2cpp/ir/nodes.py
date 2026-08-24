@@ -114,6 +114,84 @@ class IRCall:
     type: Type
 
 
+@dataclass(frozen=True)
+class IRListLiteral:
+    elements: tuple[IRExpr, ...]
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRDictLiteral:
+    keys: tuple[IRExpr, ...]
+    values: tuple[IRExpr, ...]
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRSetLiteral:
+    elements: tuple[IRExpr, ...]
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRTupleLiteral:
+    elements: tuple[IRExpr, ...]
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRIndex:
+    """list[i]/dict[k] indexing -- the index is a runtime expression,
+    unlike IRTupleIndex's compile-time-constant position.
+    """
+
+    container: IRExpr
+    index: IRExpr
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRTupleIndex:
+    """tuple[i] indexing. 'index' is the resolved, already-non-negative
+    compile-time position (std::get<N> requires a compile-time constant,
+    so unlike IRIndex this can never take a runtime expression).
+    """
+
+    tuple_expr: IRExpr
+    index: int
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRListCompRange:
+    """A list comprehension whose source is 'range(...)', e.g.
+    '[x * x for x in range(n)]' -- mirrors the IRFor/IRForEach split for
+    statement-level for-loops.
+    """
+
+    element: IRExpr
+    var: str
+    start: IRExpr
+    stop: IRExpr
+    step: int
+    condition: IRExpr | None
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRListCompForEach:
+    """A list comprehension whose source is a container expression, e.g.
+    '[x * 2 for x in values]'.
+    """
+
+    element: IRExpr
+    var: str
+    var_type: Type
+    iterable: IRExpr
+    condition: IRExpr | None
+    type: Type
+
+
 IRExpr = (
     IRLiteral
     | IRStringLiteral
@@ -125,6 +203,14 @@ IRExpr = (
     | IRNot
     | IRTruthy
     | IRCall
+    | IRListLiteral
+    | IRDictLiteral
+    | IRSetLiteral
+    | IRTupleLiteral
+    | IRIndex
+    | IRTupleIndex
+    | IRListCompRange
+    | IRListCompForEach
 )
 
 
@@ -180,7 +266,21 @@ class IRFor:
     location: SourceLocation
 
 
-IRStmt = IRReturn | IRPrintStmt | IRExprStmt | IRAssign | IRIf | IRWhile | IRFor
+@dataclass(frozen=True)
+class IRForEach:
+    """'for x in <container>' -- unlike IRFor's raw int loop, iterates a
+    List/Set/Dict's own begin()/end() range (a Dict loop variable binds to
+    each pair's '.first', matching Python's key-only dict iteration).
+    """
+
+    var: str
+    var_type: Type
+    iterable: IRExpr
+    body: tuple[IRStmt, ...]
+    location: SourceLocation
+
+
+IRStmt = IRReturn | IRPrintStmt | IRExprStmt | IRAssign | IRIf | IRWhile | IRFor | IRForEach
 
 
 @dataclass(frozen=True)

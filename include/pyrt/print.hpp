@@ -1,18 +1,17 @@
 // Python-compatible `print`: space-separated arguments followed by a
 // trailing newline, matching CPython's default sep=" ", end="\n".
 //
-// bool is special-cased to print "True"/"False" (Python's actual output)
-// rather than C++'s default "1"/"0" -- streaming a bool through
-// std::cout without std::boolalpha would otherwise silently produce text
-// that doesn't match what the same Python program prints.
-//
-// Implemented as a variadic template so that supporting more argument
-// types later (strings, f-strings, mixed values) only means adding a
-// branch here, not reshaping every call site the backend already emits.
+// A bare Str argument streams unquoted (Python's str() of a str is
+// itself); every other supported type -- bool, int, and every container
+// -- goes through pyrt::detail::write_repr (see repr.hpp), since for
+// those types Python's str() and repr() always coincide.
 #pragma once
 
 #include <iostream>
 #include <type_traits>
+
+#include "repr.hpp"
+#include "string.hpp"
 
 namespace pyrt {
 
@@ -22,10 +21,10 @@ inline void print_separated() {}
 
 template <typename First, typename... Rest>
 void print_separated(const First& first, const Rest&... rest) {
-    if constexpr (std::is_same_v<std::decay_t<First>, bool>) {
-        std::cout << (first ? "True" : "False");
-    } else {
+    if constexpr (std::is_same_v<std::decay_t<First>, Str>) {
         std::cout << first;
+    } else {
+        write_repr(std::cout, first);
     }
     if constexpr (sizeof...(rest) > 0) {
         std::cout << ' ';

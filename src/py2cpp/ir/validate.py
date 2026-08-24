@@ -15,6 +15,7 @@ from py2cpp.ir.nodes import (
     IRAssign,
     IRExprStmt,
     IRFor,
+    IRForEach,
     IRFunction,
     IRIf,
     IRModule,
@@ -24,7 +25,7 @@ from py2cpp.ir.nodes import (
     IRWhile,
 )
 from py2cpp.types.join import is_assignable
-from py2cpp.types.model import BoolType, IntType, StringType
+from py2cpp.types.model import BoolType, DictType, IntType, ListType, SetType, StringType, TupleType
 
 
 class InternalCompilerError(Exception):
@@ -69,7 +70,9 @@ def _validate_stmt(stmt: IRStmt) -> None:
         raise InternalCompilerError("'return' reached the IR outside a function's final position")
     if isinstance(stmt, IRPrintStmt):
         for arg in stmt.args:
-            if not isinstance(arg.type, (IntType, BoolType, StringType)):
+            if not isinstance(
+                arg.type, (IntType, BoolType, StringType, ListType, DictType, SetType, TupleType)
+            ):
                 raise InternalCompilerError(f"'print' argument has unsupported type {arg.type}")
     elif isinstance(stmt, IRExprStmt):
         pass
@@ -91,6 +94,8 @@ def _validate_stmt(stmt: IRStmt) -> None:
     elif isinstance(stmt, IRFor):
         if stmt.step == 0:
             raise InternalCompilerError("'for' step reaching the IR must not be zero")
+        _validate_statements(stmt.body)
+    elif isinstance(stmt, IRForEach):
         _validate_statements(stmt.body)
     else:
         raise InternalCompilerError(f"unexpected IR statement: {stmt!r}")  # pragma: no cover

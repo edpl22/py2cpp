@@ -123,3 +123,62 @@ def test_rejects_fstring_format_spec() -> None:
     )
     assert diagnostics.has_errors
     assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_accepts_list_dict_set_tuple_literals() -> None:
+    diagnostics = _validate(
+        "def f() -> int:\n"
+        "    a: list[int] = [1, 2, 3]\n"
+        "    b: dict[str, int] = {'x': 1}\n"
+        "    c: set[int] = {1, 2}\n"
+        "    d: tuple[int, int] = (1, 2)\n"
+        "    return a[0]\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_rejects_empty_list_literal() -> None:
+    diagnostics = _validate("def f() -> int:\n    a = []\n    return 0\n")
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_empty_dict_literal() -> None:
+    diagnostics = _validate("def f() -> int:\n    a = {}\n    return 0\n")
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_accepts_indexing() -> None:
+    diagnostics = _validate(
+        "def f(values: list[int]) -> int:\n    return values[0]\n\n\nprint(f([1]))\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_accepts_for_over_container() -> None:
+    diagnostics = _validate(
+        "def f(values: list[int]) -> int:\n"
+        "    total: int = 0\n"
+        "    for v in values:\n"
+        "        total = total + v\n"
+        "    return total\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_accepts_list_comprehension_with_condition() -> None:
+    diagnostics = _validate(
+        "def f(values: list[int]) -> list[int]:\n"
+        "    return [x * 2 for x in values if x > 0]\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_rejects_comprehension_with_multiple_for_clauses() -> None:
+    diagnostics = _validate(
+        "def f(values: list[int], more: list[int]) -> list[int]:\n"
+        "    return [x for x in values for y in more]\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX

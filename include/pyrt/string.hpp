@@ -25,6 +25,12 @@ public:
     Str(const char* text) : value_(text) {}
     explicit Str(std::string text) : value_(std::move(text)) {}
 
+    // Raw UTF-8 bytes, exposed for pyrt::detail::write_repr's quoting
+    // logic (see repr.hpp) -- containers need to render a nested Str
+    // differently (quoted) than Str's own operator<< (unquoted, used for
+    // top-level print).
+    const std::string& raw() const { return value_; }
+
     friend Str operator+(const Str& lhs, const Str& rhs) { return Str(lhs.value_ + rhs.value_); }
 
     friend bool operator==(const Str& lhs, const Str& rhs) { return lhs.value_ == rhs.value_; }

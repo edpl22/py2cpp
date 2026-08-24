@@ -32,3 +32,36 @@ class BoolType(Type):
 class StringType(Type):
     def __str__(self) -> str:
         return "str"
+
+
+@dataclass(frozen=True)
+class ListType(Type):
+    element_type: Type
+
+    def __str__(self) -> str:
+        return f"list[{self.element_type}]"
+
+
+@dataclass(frozen=True)
+class DictType(Type):
+    key_type: Type
+    value_type: Type
+
+    def __str__(self) -> str:
+        return f"dict[{self.key_type}, {self.value_type}]"
+
+
+@dataclass(frozen=True)
+class SetType(Type):
+    element_type: Type
+
+    def __str__(self) -> str:
+        return f"set[{self.element_type}]"
+
+
+@dataclass(frozen=True)
+class TupleType(Type):
+    element_types: tuple[Type, ...]
+
+    def __str__(self) -> str:
+        return f"tuple[{', '.join(str(t) for t in self.element_types)}]"

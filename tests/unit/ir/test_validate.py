@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 
 from py2cpp.diagnostics import SourceLocation
-from py2cpp.ir.nodes import IRFunction, IRModule, IRPrintStmt, IRReturn, IRVarRef
+from py2cpp.ir.nodes import IRForEach, IRFunction, IRModule, IRPrintStmt, IRReturn, IRVarRef
 from py2cpp.ir.validate import InternalCompilerError, validate_module
-from py2cpp.types.model import IntType, StringType
+from py2cpp.types.model import IntType, ListType, StringType
 
 _LOCATION = SourceLocation(filename=Path("test.py"), line=1, column=1)
 
@@ -50,6 +50,25 @@ def test_print_with_string_argument_passes() -> None:
         functions=(),
         main_body=(
             IRPrintStmt(args=(IRVarRef(name="s", type=StringType()),), location=_LOCATION),
+        ),
+    )
+    validate_module(module)  # must not raise
+
+
+def test_for_each_body_is_validated() -> None:
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRForEach(
+                var="x",
+                var_type=IntType(),
+                iterable=IRVarRef(name="values", type=ListType(IntType())),
+                body=(
+                    IRPrintStmt(args=(IRVarRef(name="x", type=IntType()),), location=_LOCATION),
+                ),
+                location=_LOCATION,
+            ),
         ),
     )
     validate_module(module)  # must not raise

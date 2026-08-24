@@ -25,11 +25,17 @@ from py2cpp.ir.nodes import (
     IRBinaryExpr,
     IRCall,
     IRCompare,
+    IRDictLiteral,
     IRExpr,
     IRExprStmt,
     IRFor,
+    IRForEach,
     IRFunction,
     IRIf,
+    IRIndex,
+    IRListCompForEach,
+    IRListCompRange,
+    IRListLiteral,
     IRLiteral,
     IRLogicalExpr,
     IRModule,
@@ -37,15 +43,18 @@ from py2cpp.ir.nodes import (
     IRParameter,
     IRPrintStmt,
     IRReturn,
+    IRSetLiteral,
     IRStmt,
     IRStringLiteral,
     IRToStr,
     IRTruthy,
+    IRTupleIndex,
+    IRTupleLiteral,
     IRVarRef,
     IRWhile,
     LogicalOp,
 )
-from py2cpp.types.model import StringType
+from py2cpp.types.model import DictType, ListType, SetType, StringType
 
 _BINARY_OP_HELPER = {
     BinaryOp.ADD: "pyrt::add",
@@ -127,6 +136,8 @@ def _emit_stmt(writer: CodeWriter, stmt: IRStmt) -> None:
         writer.write_line("}")
     elif isinstance(stmt, IRFor):
         _emit_for(writer, stmt)
+    elif isinstance(stmt, IRForEach):
+        _emit_for_each(writer, stmt)
     else:
         raise TypeError(f"unhandled IR statement: {stmt!r}")  # pragma: no cover
 
@@ -177,6 +188,30 @@ def _emit_for(writer: CodeWriter, stmt: IRFor) -> None:
     writer.write_line("}")
 
 
+def _emit_for_each(writer: CodeWriter, stmt: IRForEach) -> None:
+    var = escape_identifier(stmt.var)
+    iterable = _emit_expr(stmt.iterable)
+    if isinstance(stmt.iterable.type, DictType):
+        # Python 'for k in d' iterates keys only; pyrt::Dict's own
+        # begin()/end() yields key/value pairs (see dict.hpp), so bind the
+        # loop variable to '.first' of each one.
+        writer.write_line(f"for (const auto& __pyrt_pair : {iterable}) {{")
+        writer.indent()
+        writer.write_line(f"{cpp_type(stmt.var_type)} {var} = __pyrt_pair.first;")
+        for inner in stmt.body:
+            _emit_stmt(writer, inner)
+        writer.dedent()
+        writer.write_line("}")
+        return
+
+    writer.write_line(f"for (const auto& {var} : {iterable}) {{")
+    writer.indent()
+    for inner in stmt.body:
+        _emit_stmt(writer, inner)
+    writer.dedent()
+    writer.write_line("}")
+
+
 def _emit_condition(expr: IRExpr) -> str:
     """Like _emit_expr, but for direct use inside if(...)/while(...), which
     already supplies the delimiting parens -- avoids the doubled-up
@@ -219,4 +254,81 @@ def _emit_expr(expr: IRExpr) -> str:
     if isinstance(expr, IRCall):
         args = ", ".join(_emit_expr(arg) for arg in expr.args)
         return f"{escape_identifier(expr.callee)}({args})"
+    if isinstance(expr, IRListLiteral):
+        assert isinstance(expr.type, ListType)
+        elem_type = cpp_type(expr.type.element_type)
+        elements = ", ".join(_emit_expr(e) for e in expr.elements)
+        return f"pyrt::List<{elem_type}>(std::deque<{elem_type}>{{{elements}}})"
+    if isinstance(expr, IRSetLiteral):
+        assert isinstance(expr.type, SetType)
+        elem_type = cpp_type(expr.type.element_type)
+        elements = ", ".join(_emit_expr(e) for e in expr.elements)
+        return f"pyrt::Set<{elem_type}>(std::deque<{elem_type}>{{{elements}}})"
+    if isinstance(expr, IRDictLiteral):
+        return _emit_dict_literal(expr)
+    if isinstance(expr, IRTupleLiteral):
+        tuple_type = cpp_type(expr.type)
+        elements = ", ".join(_emit_expr(e) for e in expr.elements)
+        return f"{tuple_type}({elements})"
+    if isinstance(expr, IRIndex):
+        return f"{_emit_expr(expr.container)}.at({_emit_expr(expr.index)})"
+    if isinstance(expr, IRTupleIndex):
+        return f"std::get<{expr.index}>({_emit_expr(expr.tuple_expr)})"
+    if isinstance(expr, IRListCompRange):
+        return _emit_list_comp_range(expr)
+    if isinstance(expr, IRListCompForEach):
+        return _emit_list_comp_for_each(expr)
     raise TypeError(f"unhandled IR expression: {expr!r}")  # pragma: no cover
+
+
+def _emit_dict_literal(expr: IRDictLiteral) -> str:
+    dict_type = expr.type
+    assert isinstance(dict_type, DictType)
+    key_type = cpp_type(dict_type.key_type)
+    value_type = cpp_type(dict_type.value_type)
+    pairs = ", ".join(
+        f"{{{_emit_expr(k)}, {_emit_expr(v)}}}" for k, v in zip(expr.keys, expr.values, strict=True)
+    )
+    return (
+        f"pyrt::Dict<{key_type}, {value_type}>("
+        f"std::vector<std::pair<{key_type}, {value_type}>>{{{pairs}}})"
+    )
+
+
+def _emit_list_comp_range(expr: IRListCompRange) -> str:
+    var = escape_identifier(expr.var)
+    elem_type = cpp_type(expr.element.type)
+    start = _emit_expr(expr.start)
+    stop = _emit_expr(expr.stop)
+    comparison = "<" if expr.step > 0 else ">"
+    lines = [
+        f"std::deque<{elem_type}> __pyrt_result;",
+        f"for (std::int64_t {var} = {start}; {var} {comparison} {stop}; "
+        f"{var} = pyrt::add({var}, {expr.step})) {{",
+    ]
+    if expr.condition is not None:
+        lines.append(f"    if (!({_emit_condition(expr.condition)})) continue;")
+    lines.append(f"    __pyrt_result.push_back({_emit_expr(expr.element)});")
+    lines.append("}")
+    lines.append("return __pyrt_result;")
+    body = "\n    ".join(lines)
+    return f"pyrt::List<{elem_type}>([&]() {{\n    {body}\n}}())"
+
+
+def _emit_list_comp_for_each(expr: IRListCompForEach) -> str:
+    var = escape_identifier(expr.var)
+    elem_type = cpp_type(expr.element.type)
+    iterable = _emit_expr(expr.iterable)
+    lines = [f"std::deque<{elem_type}> __pyrt_result;"]
+    if isinstance(expr.iterable.type, DictType):
+        lines.append(f"for (const auto& __pyrt_pair : {iterable}) {{")
+        lines.append(f"    {cpp_type(expr.var_type)} {var} = __pyrt_pair.first;")
+    else:
+        lines.append(f"for (const auto& {var} : {iterable}) {{")
+    if expr.condition is not None:
+        lines.append(f"    if (!({_emit_condition(expr.condition)})) continue;")
+    lines.append(f"    __pyrt_result.push_back({_emit_expr(expr.element)});")
+    lines.append("}")
+    lines.append("return __pyrt_result;")
+    body = "\n    ".join(lines)
+    return f"pyrt::List<{elem_type}>([&]() {{\n    {body}\n}}())"

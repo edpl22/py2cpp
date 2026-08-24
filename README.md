@@ -7,12 +7,15 @@ readable, compilable **C++17**. py2cpp is itself written entirely in Python;
 C++ is only ever an output format, plus a small header-only compatibility
 runtime (`pyrt`) linked by generated code.
 
-> **Status:** M3 complete. py2cpp compiles functions with annotated `int`/
-> `bool`/`str`, arithmetic, comparisons, `and`/`or`/`not`, local variables,
-> `if`/`elif`/`else`, `while`, `for ... in range(...)`, string
-> concatenation, and f-strings (no `!conversion` or `:format_spec`
-> support yet) to compilable C++17. See the roadmap below for what's not
-> there yet.
+> **Status:** M4 complete. py2cpp compiles functions with annotated `int`/
+> `bool`/`str`/`list`/`dict`/`set`/`tuple`, arithmetic, comparisons,
+> `and`/`or`/`not`, local variables, `if`/`elif`/`else`, `while`,
+> `for ... in range(...)` and `for ... in <container>`, string
+> concatenation, f-strings, list/dict/set/tuple literals, indexing, and
+> list comprehensions to compilable C++17. Container mutation
+> (`.append(...)`, `d[k] = v`), `in`/`not in`, dict/set comprehensions,
+> and tuple iteration/unpacking aren't supported yet. See the roadmap
+> below for what's not there yet.
 
 ## Why not just use Python?
 
@@ -85,7 +88,7 @@ g++ -std=c++17 build/classify.cpp -o build/classify
 | M1 | Minimal functions/arithmetic pipeline: Python → AST → IR → C++ → compiled → run |
 | M2 | Control flow (`if`/`while`/`for`) and static type inference — **done** |
 | M3 | Strings and f-strings — **done** |
-| M4 | Containers (`list`/`dict`/`set`/`tuple`) and comprehensions |
+| M4 | Containers (`list`/`dict`/`set`/`tuple`) and comprehensions — **done** |
 | M5 | Classes and single inheritance |
 | M6 | Exceptions |
 | M7 | v0.1.0 polish: docs, examples, cross-compiler CI, packaging |

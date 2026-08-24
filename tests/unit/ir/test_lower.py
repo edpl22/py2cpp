@@ -17,17 +17,34 @@ from py2cpp.ir.nodes import (
     IRAssign,
     IRBinaryExpr,
     IRCall,
+    IRDictLiteral,
     IRFor,
+    IRForEach,
     IRIf,
+    IRIndex,
+    IRListCompForEach,
+    IRListCompRange,
+    IRListLiteral,
     IRModule,
     IRPrintStmt,
     IRReturn,
+    IRSetLiteral,
     IRStringLiteral,
     IRToStr,
+    IRTupleIndex,
+    IRTupleLiteral,
     IRWhile,
 )
 from py2cpp.semantic.collect import collect_symbols
-from py2cpp.types.model import BoolType, IntType, StringType
+from py2cpp.types.model import (
+    BoolType,
+    DictType,
+    IntType,
+    ListType,
+    SetType,
+    StringType,
+    TupleType,
+)
 
 _PATH = Path("test.py")
 
@@ -298,3 +315,204 @@ def test_print_accepts_string_argument() -> None:
     print_stmt = module.main_body[0]
     assert isinstance(print_stmt, IRPrintStmt)
     assert isinstance(print_stmt.args[0], IRStringLiteral)
+
+
+def test_list_literal_infers_homogeneous_element_type() -> None:
+    diagnostics, module = _lower("values = [1, 2, 3]\nprint(values)\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert isinstance(assign.value, IRListLiteral)
+    assert assign.type == ListType(IntType())
+
+
+def test_list_literal_widens_bool_and_int_elements() -> None:
+    diagnostics, module = _lower("values = [1, (2 > 1), 3]\nprint(values)\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert assign.type == ListType(IntType())
+
+
+def test_list_literal_with_incompatible_element_types_is_rejected() -> None:
+    diagnostics, module = _lower("values = [1, 'a']\nprint(values)\n")
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_dict_literal_infers_key_and_value_types() -> None:
+    diagnostics, module = _lower("ages = {'alice': 30, 'bob': 25}\nprint(ages)\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert isinstance(assign.value, IRDictLiteral)
+    assert assign.type == DictType(StringType(), IntType())
+
+
+def test_set_literal_infers_element_type() -> None:
+    diagnostics, module = _lower("values = {1, 2, 3}\nprint(values)\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert isinstance(assign.value, IRSetLiteral)
+    assert assign.type == SetType(IntType())
+
+
+def test_tuple_literal_keeps_heterogeneous_element_types() -> None:
+    diagnostics, module = _lower("pair = (1, 'a')\nprint(pair)\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert isinstance(assign.value, IRTupleLiteral)
+    assert assign.type == TupleType((IntType(), StringType()))
+
+
+def test_list_index_lowers_to_ir_index() -> None:
+    diagnostics, module = _lower(
+        "def first(values: list[int]) -> int:\n    return values[0]\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    return_stmt = module.functions[0].body[0]
+    assert isinstance(return_stmt, IRReturn)
+    assert isinstance(return_stmt.value, IRIndex)
+    assert return_stmt.value.type == IntType()
+
+
+def test_dict_index_requires_matching_key_type() -> None:
+    diagnostics, module = _lower(
+        "def f(ages: dict[str, int]) -> int:\n    return ages[1]\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_tuple_index_with_literal_lowers_to_ir_tuple_index() -> None:
+    diagnostics, module = _lower(
+        "def f(pair: tuple[int, str]) -> str:\n    return pair[1]\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    return_stmt = module.functions[0].body[0]
+    assert isinstance(return_stmt, IRReturn)
+    assert isinstance(return_stmt.value, IRTupleIndex)
+    assert return_stmt.value.index == 1
+    assert return_stmt.value.type == StringType()
+
+
+def test_tuple_index_with_negative_literal_resolves_position() -> None:
+    diagnostics, module = _lower(
+        "def f(pair: tuple[int, str]) -> str:\n    return pair[-1]\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    return_stmt = module.functions[0].body[0]
+    assert isinstance(return_stmt, IRReturn)
+    assert isinstance(return_stmt.value, IRTupleIndex)
+    assert return_stmt.value.index == 1
+
+
+def test_tuple_index_with_variable_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f(pair: tuple[int, str], i: int) -> str:\n    return pair[i]\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_tuple_index_out_of_range_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f(pair: tuple[int, str]) -> str:\n    return pair[5]\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_set_indexing_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f(values: set[int]) -> int:\n    return values[0]\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_for_each_over_list_lowers_element_type() -> None:
+    diagnostics, module = _lower(
+        "def total_of(values: list[int]) -> int:\n"
+        "    total: int = 0\n"
+        "    for v in values:\n"
+        "        total = total + v\n"
+        "    return total\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    for_stmt = module.functions[0].body[1]
+    assert isinstance(for_stmt, IRForEach)
+    assert for_stmt.var_type == IntType()
+
+
+def test_for_each_over_dict_binds_key_type() -> None:
+    diagnostics, module = _lower(
+        "def f(ages: dict[str, int]) -> int:\n"
+        "    total: int = 0\n"
+        "    for name in ages:\n"
+        "        total = total + ages[name]\n"
+        "    return total\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    for_stmt = module.functions[0].body[1]
+    assert isinstance(for_stmt, IRForEach)
+    assert for_stmt.var_type == StringType()
+
+
+def test_iterating_a_tuple_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f(pair: tuple[int, int]) -> int:\n"
+        "    total: int = 0\n"
+        "    for v in pair:\n"
+        "        total = total + v\n"
+        "    return total\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_list_comprehension_over_range_lowers() -> None:
+    diagnostics, module = _lower("squares = [x * x for x in range(5)]\nprint(squares)\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert isinstance(assign.value, IRListCompRange)
+    assert assign.type == ListType(IntType())
+
+
+def test_list_comprehension_over_container_with_condition_lowers() -> None:
+    diagnostics, module = _lower(
+        "def positives(values: list[int]) -> list[int]:\n"
+        "    return [x for x in values if x > 0]\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    return_stmt = module.functions[0].body[0]
+    assert isinstance(return_stmt, IRReturn)
+    assert isinstance(return_stmt.value, IRListCompForEach)
+    assert return_stmt.value.condition is not None
+
+
+def test_print_accepts_list_argument() -> None:
+    diagnostics, module = _lower("print([1, 2, 3])\n")
+    assert not diagnostics.has_errors
+    assert module is not None

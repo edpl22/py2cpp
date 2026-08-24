@@ -41,11 +41,17 @@ from py2cpp.ir.nodes import (
     IRBinaryExpr,
     IRCall,
     IRCompare,
+    IRDictLiteral,
     IRExpr,
     IRExprStmt,
     IRFor,
+    IRForEach,
     IRFunction,
     IRIf,
+    IRIndex,
+    IRListCompForEach,
+    IRListCompRange,
+    IRListLiteral,
     IRLiteral,
     IRLogicalExpr,
     IRModule,
@@ -53,10 +59,13 @@ from py2cpp.ir.nodes import (
     IRParameter,
     IRPrintStmt,
     IRReturn,
+    IRSetLiteral,
     IRStmt,
     IRStringLiteral,
     IRToStr,
     IRTruthy,
+    IRTupleIndex,
+    IRTupleLiteral,
     IRVarRef,
     IRWhile,
     LogicalOp,
@@ -64,7 +73,16 @@ from py2cpp.ir.nodes import (
 from py2cpp.semantic.annotations import resolve_annotation
 from py2cpp.semantic.symbols import FunctionSymbol, SymbolTable
 from py2cpp.types.join import is_assignable, join
-from py2cpp.types.model import BoolType, IntType, StringType, Type
+from py2cpp.types.model import (
+    BoolType,
+    DictType,
+    IntType,
+    ListType,
+    SetType,
+    StringType,
+    TupleType,
+    Type,
+)
 
 _BINOP_MAP: dict[type[ast.operator], BinaryOp] = {
     ast.Add: BinaryOp.ADD,
@@ -444,19 +462,24 @@ def _lower_while(
     return IRWhile(condition=condition, body=tuple(body), location=location)
 
 
-def _lower_for(
-    node: ast.For,
+def _is_range_call(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "range"
+    )
+
+
+def _parse_range_call(
+    range_call: ast.Call,
     scope: dict[str, Type],
     symtab: SymbolTable,
     source: SourceFile,
     diagnostics: DiagnosticEngine,
     *,
     enforce_definition_order: bool,
-) -> IRFor | None:
-    location = _location(source, node)
-    assert isinstance(node.target, ast.Name)
-    range_call = node.iter
-    assert isinstance(range_call, ast.Call)
+    location: SourceLocation,
+) -> tuple[IRExpr, IRExpr, int] | None:
     args = range_call.args
 
     start_node: ast.expr | None
@@ -501,9 +524,95 @@ def _lower_for(
     if not isinstance(start.type, IntType) or not isinstance(stop.type, IntType):
         diagnostics.error(codes.TYPE_MISMATCH, "'range' arguments must be 'int'", location)
         return None
+    return start, stop, step
 
+
+def _iterable_element_type(
+    container_type: Type, location: SourceLocation, diagnostics: DiagnosticEngine
+) -> Type | None:
+    if isinstance(container_type, (ListType, SetType)):
+        return container_type.element_type
+    if isinstance(container_type, DictType):
+        # Python 'for k in d' iterates keys only.
+        return container_type.key_type
+    if isinstance(container_type, TupleType):
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            "iterating a 'tuple' is not supported in this milestone",
+            location,
+            help_text="index its elements directly, e.g. 't[0]'",
+        )
+        return None
+    diagnostics.error(
+        codes.TYPE_MISMATCH,
+        f"'{container_type}' object is not iterable in this milestone",
+        location,
+    )
+    return None
+
+
+def _lower_for(
+    node: ast.For,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRFor | IRForEach | None:
+    location = _location(source, node)
+    assert isinstance(node.target, ast.Name)
+
+    if _is_range_call(node.iter):
+        assert isinstance(node.iter, ast.Call)
+        parsed = _parse_range_call(
+            node.iter,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+            location=location,
+        )
+        if parsed is None:
+            return None
+        start, stop, step = parsed
+        loop_scope = dict(scope)
+        loop_scope[node.target.id] = IntType()
+        body = _lower_block(
+            node.body,
+            loop_scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if body is None:
+            return None
+        return IRFor(
+            var=node.target.id,
+            start=start,
+            stop=stop,
+            step=step,
+            body=tuple(body),
+            location=location,
+        )
+
+    iterable = _lower_expr(
+        node.iter,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if iterable is None:
+        return None
+    element_type = _iterable_element_type(iterable.type, location, diagnostics)
+    if element_type is None:
+        return None
     loop_scope = dict(scope)
-    loop_scope[node.target.id] = IntType()
+    loop_scope[node.target.id] = element_type
     body = _lower_block(
         node.body,
         loop_scope,
@@ -514,9 +623,12 @@ def _lower_for(
     )
     if body is None:
         return None
-
-    return IRFor(
-        var=node.target.id, start=start, stop=stop, step=step, body=tuple(body), location=location
+    return IRForEach(
+        var=node.target.id,
+        var_type=element_type,
+        iterable=iterable,
+        body=tuple(body),
+        location=location,
     )
 
 
@@ -548,7 +660,9 @@ def _lower_print(
         )
         return None
     for arg in args:
-        if not isinstance(arg.type, (IntType, BoolType, StringType)):
+        if not isinstance(
+            arg.type, (IntType, BoolType, StringType, ListType, DictType, SetType, TupleType)
+        ):
             diagnostics.error(
                 codes.TYPE_MISMATCH,
                 f"'print' does not support values of type '{arg.type}' in this milestone",
@@ -708,6 +822,367 @@ def _lower_fstring(
     return result
 
 
+def _join_all(types: list[Type]) -> Type | None:
+    """Folds join() across every element type of a non-empty literal (the
+    subset validator rejects empty list/dict/set literals, so 'types' is
+    never empty here).
+    """
+
+    result = types[0]
+    for t in types[1:]:
+        joined = join(result, t)
+        if joined is None:
+            return None
+        result = joined
+    return result
+
+
+def _lower_list_literal(
+    node: ast.List,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    elements = _lower_call_arguments(
+        node.elts,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if elements is None:
+        return None
+    element_type = _join_all([e.type for e in elements])
+    if element_type is None:
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            "list literal elements must all share a common type in this milestone",
+            _location(source, node),
+        )
+        return None
+    return IRListLiteral(elements=tuple(elements), type=ListType(element_type))
+
+
+def _lower_set_literal(
+    node: ast.Set,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    elements = _lower_call_arguments(
+        node.elts,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if elements is None:
+        return None
+    element_type = _join_all([e.type for e in elements])
+    if element_type is None:
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            "set literal elements must all share a common type in this milestone",
+            _location(source, node),
+        )
+        return None
+    return IRSetLiteral(elements=tuple(elements), type=SetType(element_type))
+
+
+def _lower_dict_literal(
+    node: ast.Dict,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    keys: list[IRExpr] = []
+    values: list[IRExpr] = []
+    ok = True
+    for key_node, value_node in zip(node.keys, node.values, strict=True):
+        # The subset validator rejects '**' unpacking (a None key), so
+        # every key here is a real expression.
+        assert key_node is not None
+        key = _lower_expr(
+            key_node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        value = _lower_expr(
+            value_node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if key is None or value is None:
+            ok = False
+            continue
+        keys.append(key)
+        values.append(value)
+    if not ok:
+        return None
+
+    location = _location(source, node)
+    key_type = _join_all([k.type for k in keys])
+    if key_type is None:
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            "dict literal keys must all share a common type in this milestone",
+            location,
+        )
+        return None
+    value_type = _join_all([v.type for v in values])
+    if value_type is None:
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            "dict literal values must all share a common type in this milestone",
+            location,
+        )
+        return None
+    return IRDictLiteral(
+        keys=tuple(keys), values=tuple(values), type=DictType(key_type, value_type)
+    )
+
+
+def _lower_tuple_literal(
+    node: ast.Tuple,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    elements = _lower_call_arguments(
+        node.elts,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if elements is None:
+        return None
+    return IRTupleLiteral(
+        elements=tuple(elements), type=TupleType(tuple(e.type for e in elements))
+    )
+
+
+def _lower_subscript(
+    node: ast.Subscript,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    container = _lower_expr(
+        node.value,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if container is None:
+        return None
+    location = _location(source, node)
+    container_type = container.type
+
+    if isinstance(container_type, ListType):
+        index = _lower_expr(
+            node.slice,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if index is None:
+            return None
+        if not is_assignable(index.type, IntType()):
+            diagnostics.error(
+                codes.TYPE_MISMATCH, f"list index must be 'int', got '{index.type}'", location
+            )
+            return None
+        return IRIndex(container=container, index=index, type=container_type.element_type)
+
+    if isinstance(container_type, DictType):
+        index = _lower_expr(
+            node.slice,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if index is None:
+            return None
+        if not is_assignable(index.type, container_type.key_type):
+            diagnostics.error(
+                codes.TYPE_MISMATCH,
+                f"dict key must be '{container_type.key_type}', got '{index.type}'",
+                location,
+            )
+            return None
+        return IRIndex(container=container, index=index, type=container_type.value_type)
+
+    if isinstance(container_type, TupleType):
+        literal_index = extract_int_literal(node.slice)
+        if literal_index is None:
+            diagnostics.error(
+                codes.TYPE_MISMATCH,
+                "tuple index must be a compile-time integer literal in this milestone",
+                location,
+                help_text="a runtime-computed tuple index arrives in a later milestone",
+            )
+            return None
+        length = len(container_type.element_types)
+        resolved = literal_index + length if literal_index < 0 else literal_index
+        if resolved < 0 or resolved >= length:
+            diagnostics.error(
+                codes.TYPE_MISMATCH,
+                f"tuple index {literal_index} is out of range for a tuple of length {length}",
+                location,
+            )
+            return None
+        return IRTupleIndex(
+            tuple_expr=container, index=resolved, type=container_type.element_types[resolved]
+        )
+
+    diagnostics.error(
+        codes.TYPE_MISMATCH,
+        f"'{container_type}' object is not subscriptable in this milestone",
+        location,
+    )
+    return None
+
+
+def _lower_comprehension(
+    node: ast.ListComp,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    location = _location(source, node)
+    generator = node.generators[0]
+    assert isinstance(generator.target, ast.Name)
+    var = generator.target.id
+
+    if _is_range_call(generator.iter):
+        assert isinstance(generator.iter, ast.Call)
+        parsed = _parse_range_call(
+            generator.iter,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+            location=location,
+        )
+        if parsed is None:
+            return None
+        start, stop, step = parsed
+        comp_scope = dict(scope)
+        comp_scope[var] = IntType()
+        condition: IRExpr | None = None
+        if generator.ifs:
+            condition = _lower_condition(
+                generator.ifs[0],
+                comp_scope,
+                symtab,
+                source,
+                diagnostics,
+                enforce_definition_order=enforce_definition_order,
+            )
+            if condition is None:
+                return None
+        element = _lower_expr(
+            node.elt,
+            comp_scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if element is None:
+            return None
+        return IRListCompRange(
+            element=element,
+            var=var,
+            start=start,
+            stop=stop,
+            step=step,
+            condition=condition,
+            type=ListType(element.type),
+        )
+
+    iterable = _lower_expr(
+        generator.iter,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if iterable is None:
+        return None
+    element_type = _iterable_element_type(iterable.type, location, diagnostics)
+    if element_type is None:
+        return None
+    comp_scope = dict(scope)
+    comp_scope[var] = element_type
+    condition = None
+    if generator.ifs:
+        condition = _lower_condition(
+            generator.ifs[0],
+            comp_scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if condition is None:
+            return None
+    element = _lower_expr(
+        node.elt,
+        comp_scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if element is None:
+        return None
+    return IRListCompForEach(
+        element=element,
+        var=var,
+        var_type=element_type,
+        iterable=iterable,
+        condition=condition,
+        type=ListType(element.type),
+    )
+
+
 def _lower_expr(
     node: ast.expr,
     scope: dict[str, Type],
@@ -734,6 +1209,66 @@ def _lower_expr(
 
     if isinstance(node, ast.JoinedStr):
         return _lower_fstring(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
+    if isinstance(node, ast.List):
+        return _lower_list_literal(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
+    if isinstance(node, ast.Set):
+        return _lower_set_literal(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
+    if isinstance(node, ast.Dict):
+        return _lower_dict_literal(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
+    if isinstance(node, ast.Tuple):
+        return _lower_tuple_literal(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
+    if isinstance(node, ast.Subscript):
+        return _lower_subscript(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
+    if isinstance(node, ast.ListComp):
+        return _lower_comprehension(
             node,
             scope,
             symtab,

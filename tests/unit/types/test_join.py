@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from py2cpp.types.join import is_assignable, join
-from py2cpp.types.model import BoolType, IntType, StringType
+from py2cpp.types.model import BoolType, IntType, ListType, StringType, TupleType
 
 
 def test_same_type_joins_to_itself() -> None:
@@ -29,3 +29,15 @@ def test_string_joins_only_with_itself() -> None:
     assert join(StringType(), IntType()) is None
     assert join(StringType(), BoolType()) is None
     assert join(IntType(), StringType()) is None
+
+
+def test_list_type_joins_only_with_an_identical_list_type() -> None:
+    assert join(ListType(IntType()), ListType(IntType())) == ListType(IntType())
+    assert join(ListType(IntType()), ListType(StringType())) is None
+    assert join(ListType(IntType()), IntType()) is None
+
+
+def test_tuple_type_joins_only_with_an_identical_tuple_type() -> None:
+    left = TupleType((IntType(), StringType()))
+    assert join(left, TupleType((IntType(), StringType()))) == left
+    assert join(left, TupleType((StringType(), IntType()))) is None
