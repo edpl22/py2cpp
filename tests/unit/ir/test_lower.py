@@ -14,6 +14,7 @@ from py2cpp.diagnostics import DiagnosticEngine
 from py2cpp.frontend.loader import SourceFile
 from py2cpp.ir.lower import lower_module
 from py2cpp.ir.nodes import (
+    BinaryOp,
     IRAssign,
     IRAttributeAccess,
     IRAttributeAssign,
@@ -31,10 +32,12 @@ from py2cpp.ir.nodes import (
     IRMethodCall,
     IRModule,
     IRPrintStmt,
+    IRRaise,
     IRReturn,
     IRSetLiteral,
     IRStringLiteral,
     IRToStr,
+    IRTry,
     IRTupleIndex,
     IRTupleLiteral,
     IRWhile,
@@ -44,6 +47,7 @@ from py2cpp.types.model import (
     BoolType,
     ClassType,
     DictType,
+    ExceptionType,
     IntType,
     ListType,
     SetType,
@@ -671,6 +675,233 @@ def test_comparing_class_instances_is_rejected() -> None:
 
 def test_printing_a_class_instance_is_rejected() -> None:
     diagnostics, module = _lower(_POINT_SOURCE + "\np: Point = Point(1, 2)\nprint(p)\n")
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_floor_division_lowers_to_ir_binary_expr() -> None:
+    diagnostics, module = _lower("def f(a: int, b: int) -> int:\n    return a // b\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    return_stmt = module.functions[0].body[0]
+    assert isinstance(return_stmt, IRReturn)
+    assert isinstance(return_stmt.value, IRBinaryExpr)
+    assert return_stmt.value.op == BinaryOp.FLOORDIV
+
+
+_TRY_SOURCE = (
+    "def f(a: int, b: int) -> int:\n"
+    "    result: int = -1\n"
+    "    try:\n"
+    "        result = a // b\n"
+    "    except ZeroDivisionError as e:\n"
+    "        print(e)\n"
+    "    return result\n"
+)
+
+
+def test_try_except_lowers_to_ir_try() -> None:
+    diagnostics, module = _lower(_TRY_SOURCE)
+    assert not diagnostics.has_errors
+    assert module is not None
+    try_stmt = module.functions[0].body[1]
+    assert isinstance(try_stmt, IRTry)
+    assert len(try_stmt.handlers) == 1
+    handler = try_stmt.handlers[0]
+    assert handler.exception_type == "ZeroDivisionError"
+    assert handler.bound_name == "e"
+    print_stmt = handler.body[0]
+    assert isinstance(print_stmt, IRPrintStmt)
+    assert print_stmt.args[0].type == ExceptionType("ZeroDivisionError")
+
+
+def test_bare_except_lowers_with_none_type() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    try_stmt = module.functions[0].body[0]
+    assert isinstance(try_stmt, IRTry)
+    assert try_stmt.handlers[0].exception_type is None
+    assert try_stmt.handlers[0].bound_name is None
+
+
+def test_unknown_exception_type_in_except_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except NotAnException:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.UNKNOWN_CALL_TARGET
+
+
+def test_unreachable_except_clause_after_base_type_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.UNREACHABLE_EXCEPT_CLAUSE
+
+
+def test_unreachable_except_clause_after_bare_except_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.UNREACHABLE_EXCEPT_CLAUSE
+
+
+def test_except_clauses_in_narrow_to_broad_order_are_fine() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+
+
+def test_raise_with_message_lowers_to_ir_raise() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('bad')\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    try_stmt = module.functions[0].body[0]
+    assert isinstance(try_stmt, IRTry)
+    raise_stmt = try_stmt.body[0]
+    assert isinstance(raise_stmt, IRRaise)
+    assert raise_stmt.exception_type == "ValueError"
+    assert isinstance(raise_stmt.message, IRStringLiteral)
+    assert raise_stmt.message.value == "bad"
+
+
+def test_raise_without_message_lowers_with_none_message() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError()\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    try_stmt = module.functions[0].body[0]
+    assert isinstance(try_stmt, IRTry)
+    raise_stmt = try_stmt.body[0]
+    assert isinstance(raise_stmt, IRRaise)
+    assert raise_stmt.message is None
+
+
+def test_bare_reraise_lowers_with_none_type_and_message() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except ValueError:\n"
+        "        raise\n"
+        "    return 0\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    try_stmt = module.functions[0].body[0]
+    assert isinstance(try_stmt, IRTry)
+    handler_raise = try_stmt.handlers[0].body[0]
+    assert isinstance(handler_raise, IRRaise)
+    assert handler_raise.exception_type is None
+    assert handler_raise.message is None
+
+
+def test_raise_message_must_be_string() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError(1)\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_unknown_exception_type_in_raise_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise NotAnException('x')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.UNKNOWN_CALL_TARGET
+
+
+def test_exception_binding_cannot_be_assigned_to_a_variable() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except ValueError as e:\n"
+        "        x = e\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_comparing_exception_bindings_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except ValueError as e:\n"
+        "        print(e == e)\n"
+        "    return 0\n"
+    )
     assert diagnostics.has_errors
     assert module is None
     assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH

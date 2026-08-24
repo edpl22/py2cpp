@@ -30,6 +30,7 @@ from py2cpp.ir.nodes import (
     IRCompare,
     IRConstruct,
     IRDictLiteral,
+    IRExceptHandler,
     IRExpr,
     IRExprStmt,
     IRFor,
@@ -48,18 +49,21 @@ from py2cpp.ir.nodes import (
     IRNot,
     IRParameter,
     IRPrintStmt,
+    IRRaise,
     IRReturn,
     IRSetLiteral,
     IRStmt,
     IRStringLiteral,
     IRToStr,
     IRTruthy,
+    IRTry,
     IRTupleIndex,
     IRTupleLiteral,
     IRVarRef,
     IRWhile,
     LogicalOp,
 )
+from py2cpp.semantic.exceptions import cpp_exception_name
 from py2cpp.types.model import DictType, ListType, SetType, StringType
 
 _SELF = "self"
@@ -68,6 +72,7 @@ _BINARY_OP_HELPER = {
     BinaryOp.ADD: "pyrt::add",
     BinaryOp.SUB: "pyrt::sub",
     BinaryOp.MUL: "pyrt::mul",
+    BinaryOp.FLOORDIV: "pyrt::floordiv",
 }
 _COMPARE_OP_SYMBOL = {
     CompareOp.EQ: "==",
@@ -227,8 +232,52 @@ def _emit_stmt(writer: CodeWriter, stmt: IRStmt) -> None:
         _emit_for(writer, stmt)
     elif isinstance(stmt, IRForEach):
         _emit_for_each(writer, stmt)
+    elif isinstance(stmt, IRTry):
+        _emit_try(writer, stmt)
+    elif isinstance(stmt, IRRaise):
+        _emit_raise(writer, stmt)
     else:
         raise TypeError(f"unhandled IR statement: {stmt!r}")  # pragma: no cover
+
+
+def _emit_try(writer: CodeWriter, stmt: IRTry) -> None:
+    # Each handler's own leading '} catch (...) {' merges with whatever
+    # precedes it (the try body's close, or the previous handler's close)
+    # -- mirrors _emit_if's elif-chain merging below. Only one standalone
+    # closing brace is ever written, after the very last handler.
+    writer.write_line("try {")
+    writer.indent()
+    for inner in stmt.body:
+        _emit_stmt(writer, inner)
+    writer.dedent()
+    for handler in stmt.handlers:
+        _emit_except_header(writer, handler)
+        writer.indent()
+        for inner in handler.body:
+            _emit_stmt(writer, inner)
+        writer.dedent()
+    writer.write_line("}")
+
+
+def _emit_except_header(writer: CodeWriter, handler: IRExceptHandler) -> None:
+    if handler.exception_type is None:
+        writer.write_line("} catch (...) {")
+        return
+    cpp_name = f"pyrt::{cpp_exception_name(handler.exception_type)}"
+    if handler.bound_name is not None:
+        bound = escape_identifier(handler.bound_name)
+        writer.write_line(f"}} catch (const {cpp_name}& {bound}) {{")
+    else:
+        writer.write_line(f"}} catch (const {cpp_name}&) {{")
+
+
+def _emit_raise(writer: CodeWriter, stmt: IRRaise) -> None:
+    if stmt.exception_type is None:
+        writer.write_line("throw;")
+        return
+    cpp_name = f"pyrt::{cpp_exception_name(stmt.exception_type)}"
+    message = _emit_expr(stmt.message) if stmt.message is not None else "pyrt::Str()"
+    writer.write_line(f"throw {cpp_name}({message});")
 
 
 def _emit_if(writer: CodeWriter, stmt: IRIf) -> None:

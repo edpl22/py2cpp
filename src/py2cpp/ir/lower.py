@@ -48,6 +48,7 @@ from py2cpp.ir.nodes import (
     IRConstruct,
     IRConstructor,
     IRDictLiteral,
+    IRExceptHandler,
     IRExpr,
     IRExprStmt,
     IRFor,
@@ -66,12 +67,14 @@ from py2cpp.ir.nodes import (
     IRNot,
     IRParameter,
     IRPrintStmt,
+    IRRaise,
     IRReturn,
     IRSetLiteral,
     IRStmt,
     IRStringLiteral,
     IRToStr,
     IRTruthy,
+    IRTry,
     IRTupleIndex,
     IRTupleLiteral,
     IRVarRef,
@@ -79,6 +82,7 @@ from py2cpp.ir.nodes import (
     LogicalOp,
 )
 from py2cpp.semantic.annotations import resolve_annotation
+from py2cpp.semantic.exceptions import is_exception_ancestor, is_known_exception
 from py2cpp.semantic.symbols import (
     AttributeSymbol,
     ClassSymbol,
@@ -92,6 +96,7 @@ from py2cpp.types.model import (
     BoolType,
     ClassType,
     DictType,
+    ExceptionType,
     IntType,
     ListType,
     SetType,
@@ -104,6 +109,7 @@ _BINOP_MAP: dict[type[ast.operator], BinaryOp] = {
     ast.Add: BinaryOp.ADD,
     ast.Sub: BinaryOp.SUB,
     ast.Mult: BinaryOp.MUL,
+    ast.FloorDiv: BinaryOp.FLOORDIV,
 }
 _COMPARE_OP_MAP: dict[type[ast.cmpop], CompareOp] = {
     ast.Eq: CompareOp.EQ,
@@ -649,6 +655,27 @@ def _lower_stmt(
             return None
         return IRExprStmt(expr=call_expr, location=location)
 
+    if isinstance(stmt, ast.Try):
+        return _lower_try(
+            stmt,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
+    if isinstance(stmt, ast.Raise):
+        return _lower_raise(
+            stmt,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            location,
+            enforce_definition_order=enforce_definition_order,
+        )
+
     raise AssertionError(
         f"unexpected statement after subset validation: {stmt!r}"
     )  # pragma: no cover
@@ -751,6 +778,15 @@ def _finish_assign(
     diagnostics: DiagnosticEngine,
     location: SourceLocation,
 ) -> IRAssign | None:
+    if isinstance(value.type, ExceptionType):
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            "an exception value can't be assigned to a variable in this milestone",
+            location,
+            help_text="use it directly in print(...) or an f-string within the 'except' block",
+        )
+        return None
+
     existing = scope.get(name)
 
     if existing is None:
@@ -1058,6 +1094,159 @@ def _lower_for(
     )
 
 
+def _lower_try(
+    node: ast.Try,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRTry | None:
+    location = _location(source, node)
+    body = _lower_block(
+        node.body,
+        dict(scope),
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    ok = body is not None
+
+    handlers: list[IRExceptHandler] = []
+    seen_types: list[str] = []
+    seen_bare = False
+    for handler_node in node.handlers:
+        handler = _lower_except_handler(
+            handler_node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+            seen_types=seen_types,
+            seen_bare=seen_bare,
+        )
+        if handler is None:
+            ok = False
+            continue
+        if handler.exception_type is None:
+            seen_bare = True
+        else:
+            seen_types.append(handler.exception_type)
+        handlers.append(handler)
+
+    if not ok or body is None:
+        return None
+    return IRTry(body=tuple(body), handlers=tuple(handlers), location=location)
+
+
+def _lower_except_handler(
+    handler_node: ast.ExceptHandler,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+    seen_types: list[str],
+    seen_bare: bool,
+) -> IRExceptHandler | None:
+    location = _location(source, handler_node)
+    exception_type: str | None = None
+    if handler_node.type is not None:
+        assert isinstance(handler_node.type, ast.Name)
+        exception_type = handler_node.type.id
+        if not is_known_exception(exception_type):
+            diagnostics.error(
+                codes.UNKNOWN_CALL_TARGET,
+                f"'{exception_type}' is not a known exception type in this milestone",
+                location,
+            )
+            return None
+
+    already_covered = seen_bare or (
+        exception_type is not None
+        and any(is_exception_ancestor(exception_type, seen) for seen in seen_types)
+    )
+    if already_covered:
+        diagnostics.error(
+            codes.UNREACHABLE_EXCEPT_CLAUSE,
+            "this 'except' clause can never be reached: an earlier clause in the same "
+            "'try' already catches everything it would catch",
+            location,
+        )
+        return None
+
+    handler_scope = dict(scope)
+    if handler_node.name is not None:
+        assert exception_type is not None
+        handler_scope[handler_node.name] = ExceptionType(exception_type)
+
+    body = _lower_block(
+        handler_node.body,
+        handler_scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if body is None:
+        return None
+    return IRExceptHandler(
+        exception_type=exception_type, bound_name=handler_node.name, body=tuple(body)
+    )
+
+
+def _lower_raise(
+    node: ast.Raise,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    location: SourceLocation,
+    *,
+    enforce_definition_order: bool,
+) -> IRRaise | None:
+    if node.exc is None:
+        # Subset validation already guarantees this only appears lexically
+        # inside an 'except' handler's body.
+        return IRRaise(exception_type=None, message=None, location=location)
+
+    assert isinstance(node.exc, ast.Call) and isinstance(node.exc.func, ast.Name)
+    exception_type = node.exc.func.id
+    if not is_known_exception(exception_type):
+        diagnostics.error(
+            codes.UNKNOWN_CALL_TARGET,
+            f"'{exception_type}' is not a known exception type in this milestone",
+            location,
+        )
+        return None
+
+    if not node.exc.args:
+        return IRRaise(exception_type=exception_type, message=None, location=location)
+
+    message = _lower_expr(
+        node.exc.args[0],
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if message is None:
+        return None
+    if not isinstance(message.type, StringType):
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            f"'raise {exception_type}(...)' message must be 'str', got '{message.type}'",
+            location,
+        )
+        return None
+    return IRRaise(exception_type=exception_type, message=message, location=location)
+
+
 def _lower_print(
     node: ast.Call,
     scope: dict[str, Type],
@@ -1087,7 +1276,17 @@ def _lower_print(
         return None
     for arg in args:
         if not isinstance(
-            arg.type, (IntType, BoolType, StringType, ListType, DictType, SetType, TupleType)
+            arg.type,
+            (
+                IntType,
+                BoolType,
+                StringType,
+                ListType,
+                DictType,
+                SetType,
+                TupleType,
+                ExceptionType,
+            ),
         ):
             diagnostics.error(
                 codes.TYPE_MISMATCH,
@@ -1337,7 +1536,7 @@ def _lower_fstring(
         if inner is None:
             ok = False
             continue
-        if not isinstance(inner.type, (IntType, BoolType, StringType)):
+        if not isinstance(inner.type, (IntType, BoolType, StringType, ExceptionType)):
             diagnostics.error(
                 codes.TYPE_MISMATCH,
                 f"f-string does not support values of type '{inner.type}' in this milestone",
@@ -1903,13 +2102,15 @@ def _lower_expr(
             return None
         # Comparing class instances needs '__eq__'/'__lt__'-style dunder
         # support, which this milestone doesn't have; join() would let two
-        # same-named ClassTypes through by plain equality (they're a valid
-        # 'type', just not a supported comparison), so that's rejected
-        # explicitly rather than silently falling through to it.
-        if isinstance(left.type, ClassType) or isinstance(right.type, ClassType):
+        # same-named ClassTypes/ExceptionTypes through by plain equality
+        # (they're a valid 'type', just not a supported comparison), so
+        # that's rejected explicitly rather than silently falling through.
+        if isinstance(left.type, (ClassType, ExceptionType)) or isinstance(
+            right.type, (ClassType, ExceptionType)
+        ):
             diagnostics.error(
                 codes.TYPE_MISMATCH,
-                "comparing class instances is not supported in this milestone",
+                "comparing class instances or exceptions is not supported in this milestone",
                 _location(source, node),
                 help_text="operator-overload dunders like '__eq__' arrive in a later milestone",
             )

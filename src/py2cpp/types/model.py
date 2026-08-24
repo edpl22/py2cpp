@@ -79,3 +79,20 @@ class ClassType(Type):
 
     def __str__(self) -> str:
         return self.name
+
+
+@dataclass(frozen=True)
+class ExceptionType(Type):
+    """The type of an 'except Foo as e:' binding. Deliberately not a
+    first-class value type like ClassType: an exception value exists only
+    as this transient binding, usable solely as a print()/f-string
+    argument (see ir/lower.py) -- never annotatable, storable in another
+    variable, or passable as an argument. See HANDOFF.md's M6 entry for
+    why (exceptions were kept out of resolve_annotation's recognized set
+    entirely, so the type system itself has nowhere for one to escape to).
+    """
+
+    name: str
+
+    def __str__(self) -> str:
+        return self.name

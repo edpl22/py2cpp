@@ -21,6 +21,7 @@ class BinaryOp(Enum):
     ADD = auto()
     SUB = auto()
     MUL = auto()
+    FLOORDIV = auto()
 
 
 class CompareOp(Enum):
@@ -330,6 +331,38 @@ class IRAttributeAssign:
     location: SourceLocation
 
 
+@dataclass(frozen=True)
+class IRRaise:
+    """'raise ExcType(msg)' (exception_type set, message optionally set),
+    'raise ExcType()' (exception_type set, message None), or bare 're-raise'
+    (both None) -- subset validation guarantees a bare raise only appears
+    lexically inside an except handler's body.
+    """
+
+    exception_type: str | None
+    message: IRExpr | None
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class IRExceptHandler:
+    """'except ExcType as name:' (exception_type + bound_name set),
+    'except ExcType:' (exception_type set, bound_name None), or bare
+    'except:' (both None, catches anything -- C++ 'catch (...)').
+    """
+
+    exception_type: str | None
+    bound_name: str | None
+    body: tuple[IRStmt, ...]
+
+
+@dataclass(frozen=True)
+class IRTry:
+    body: tuple[IRStmt, ...]
+    handlers: tuple[IRExceptHandler, ...]
+    location: SourceLocation
+
+
 IRStmt = (
     IRReturn
     | IRPrintStmt
@@ -340,6 +373,8 @@ IRStmt = (
     | IRFor
     | IRForEach
     | IRAttributeAssign
+    | IRRaise
+    | IRTry
 )
 
 

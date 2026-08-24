@@ -278,3 +278,113 @@ def test_rejects_comprehension_with_multiple_for_clauses() -> None:
     )
     assert diagnostics.has_errors
     assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_accepts_try_except_with_binding() -> None:
+    diagnostics = _validate(
+        "def f(a: int, b: int) -> int:\n"
+        "    result: int = 0\n"
+        "    try:\n"
+        "        result = a // b\n"
+        "    except ZeroDivisionError as e:\n"
+        "        print(e)\n"
+        "    return result\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_accepts_bare_except() -> None:
+    diagnostics = _validate(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_rejects_try_else() -> None:
+    diagnostics = _validate(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    else:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_finally() -> None:
+    diagnostics = _validate(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    finally:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_multiple_exception_types_in_one_except() -> None:
+    diagnostics = _validate(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except (ValueError, TypeError):\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_accepts_bare_reraise_inside_except() -> None:
+    diagnostics = _validate(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('x')\n"
+        "    except ValueError:\n"
+        "        raise\n"
+        "    return 0\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_rejects_bare_reraise_outside_except() -> None:
+    diagnostics = _validate("def f() -> int:\n    raise\n")
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_raise_from() -> None:
+    diagnostics = _validate(
+        "def f() -> int:\n"
+        "    try:\n"
+        "        raise ValueError('x') from None\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return 0\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_raise_of_bare_name() -> None:
+    diagnostics = _validate("def f() -> int:\n    raise ValueError\n")
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_accepts_floor_division() -> None:
+    diagnostics = _validate("def f(a: int, b: int) -> int:\n    return a // b\n")
+    assert not diagnostics.has_errors

@@ -60,6 +60,20 @@ silently applied):
   in ordinary methods but not '__init__', an asymmetry not worth the
   complexity for what it would unlock, so this milestone disallows it
   uniformly instead of guessing case by case.
+- 'try' supports one or more 'except' clauses only -- no 'else', no
+  'finally' (C++ has no direct equivalent; a later milestone could emit
+  one via an RAII scope-guard, but that's real added complexity this
+  milestone doesn't need yet). Each 'except' names at most one exception
+  type (no 'except (A, B):') from py2cpp's fixed, curated hierarchy (see
+  semantic/exceptions.py) -- not an arbitrary/user-defined one.
+- bare 're-raise' ('raise' with no expression) may only appear lexically
+  inside an 'except' handler's body -- matching (a conservative
+  approximation of) Python's own "no active exception to re-raise"
+  runtime error. 'raise X from Y' (cause chaining) is not supported.
+- an exception bound by 'except Foo as e:' is not a first-class value:
+  'e' may only be passed directly to 'print(...)' or interpolated into an
+  f-string, never stored in another variable, annotated as a parameter
+  type, passed as a call argument, or compared.
 """
 
 from __future__ import annotations
@@ -72,7 +86,7 @@ from py2cpp.diagnostics import DiagnosticEngine, SourceLocation
 from py2cpp.frontend.literals import extract_int_literal
 from py2cpp.frontend.loader import SourceFile
 
-_ALLOWED_BINOPS: tuple[type[ast.operator], ...] = (ast.Add, ast.Sub, ast.Mult)
+_ALLOWED_BINOPS: tuple[type[ast.operator], ...] = (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv)
 _ALLOWED_COMPARE_OPS: tuple[type[ast.cmpop], ...] = (
     ast.Eq,
     ast.NotEq,
@@ -237,13 +251,22 @@ class _SubsetValidator(ast.NodeVisitor):
             if isinstance(descendant, ast.Return):
                 self._reject(descendant, "'__init__' must not contain a 'return' statement")
 
-    def _validate_block(self, stmts: list[ast.stmt], *, allow_return: bool) -> None:
+    def _validate_block(
+        self, stmts: list[ast.stmt], *, allow_return: bool, in_except: bool = False
+    ) -> None:
         last_index = len(stmts) - 1
         for i, stmt in enumerate(stmts):
-            self._validate_stmt(stmt, allow_return=allow_return and i == last_index)
+            self._validate_stmt(
+                stmt, allow_return=allow_return and i == last_index, in_except=in_except
+            )
 
     def _validate_stmt(
-        self, stmt: ast.stmt, *, allow_return: bool, at_init_top_level: bool = False
+        self,
+        stmt: ast.stmt,
+        *,
+        allow_return: bool,
+        at_init_top_level: bool = False,
+        in_except: bool = False,
     ) -> None:
         if isinstance(stmt, ast.Return):
             if not allow_return:
@@ -286,16 +309,20 @@ class _SubsetValidator(ast.NodeVisitor):
             self._validate_expr(stmt.value)
         elif isinstance(stmt, ast.If):
             self._validate_expr(stmt.test)
-            self._validate_block(stmt.body, allow_return=False)
-            self._validate_block(stmt.orelse, allow_return=False)
+            self._validate_block(stmt.body, allow_return=False, in_except=in_except)
+            self._validate_block(stmt.orelse, allow_return=False, in_except=in_except)
         elif isinstance(stmt, ast.While):
             if stmt.orelse:
                 self._reject(stmt, "'while ... else' is not supported")
             self._validate_expr(stmt.test)
-            self._validate_block(stmt.body, allow_return=False)
+            self._validate_block(stmt.body, allow_return=False, in_except=in_except)
         elif isinstance(stmt, ast.For):
             self._validate_for(stmt)
-            self._validate_block(stmt.body, allow_return=False)
+            self._validate_block(stmt.body, allow_return=False, in_except=in_except)
+        elif isinstance(stmt, ast.Try):
+            self._validate_try(stmt, in_except=in_except)
+        elif isinstance(stmt, ast.Raise):
+            self._validate_raise(stmt, in_except=in_except)
         elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
             self._validate_call(stmt.value)
         elif isinstance(stmt, ast.Pass):
@@ -348,6 +375,62 @@ class _SubsetValidator(ast.NodeVisitor):
         # for a dict, that iteration yields keys) is a semantic question
         # resolved later, in ir/lower.py.
         self._validate_expr(node.iter)
+
+    def _validate_try(self, node: ast.Try, *, in_except: bool) -> None:
+        if node.orelse:
+            self._reject(node, "'try ... else' is not supported in this milestone")
+        if node.finalbody:
+            self._reject(node, "'finally' is not supported in this milestone")
+        if not node.handlers:
+            self._reject(node, "'try' must have at least one 'except' clause")
+            return
+        # The try body's own bare-raise eligibility comes from whatever
+        # lexically encloses this whole 'try' (e.g. it may itself be
+        # nested inside an outer 'except'); each handler below is always
+        # eligible regardless, since it's handling its own catch.
+        self._validate_block(node.body, allow_return=False, in_except=in_except)
+        for handler in node.handlers:
+            self._validate_except_handler(handler)
+
+    def _validate_except_handler(self, handler: ast.ExceptHandler) -> None:
+        if handler.type is None:
+            if handler.name is not None:
+                self._reject(handler, "bare 'except:' cannot bind a name")
+        elif isinstance(handler.type, ast.Tuple):
+            self._reject(
+                handler.type,
+                "'except (A, B):' with multiple types is not supported in this milestone",
+                help_text="write separate 'except' clauses instead",
+            )
+        elif not isinstance(handler.type, ast.Name):
+            self._reject(handler.type, "an 'except' clause's type must be a plain name")
+        self._validate_block(handler.body, allow_return=False, in_except=True)
+
+    def _validate_raise(self, node: ast.Raise, *, in_except: bool) -> None:
+        if node.cause is not None:
+            self._reject(node, "'raise X from Y' is not supported in this milestone")
+        if node.exc is None:
+            if not in_except:
+                self._reject(
+                    node, "bare 'raise' (re-raise) may only appear inside an 'except' block"
+                )
+            return
+        if not (isinstance(node.exc, ast.Call) and isinstance(node.exc.func, ast.Name)):
+            self._reject(
+                node,
+                "'raise' requires a call to a known exception type in this milestone",
+                help_text='e.g. \'raise ValueError("message")\'',
+            )
+            return
+        if node.exc.keywords:
+            self._reject(node.exc, "keyword arguments are not supported")
+        if len(node.exc.args) > 1:
+            self._reject(
+                node.exc, "'raise' takes at most one argument (the message) in this milestone"
+            )
+            return
+        for arg in node.exc.args:
+            self._validate_expr(arg)
 
     def _is_range_call(self, node: ast.expr) -> TypeGuard[ast.Call]:
         return (

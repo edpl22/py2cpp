@@ -8,17 +8,19 @@
 // requirement on K that this milestone has no need for yet.
 //
 // shared_ptr-wrapped for the same aliasing reason as pyrt::List (see
-// list.hpp); .at() throws std::out_of_range for a missing key, a
-// documented placeholder until py2cpp's own exception hierarchy lands.
+// list.hpp); .at() throws pyrt::KeyError for a missing key (an earlier
+// version of this file, before py2cpp had its own exception hierarchy,
+// threw std::out_of_range instead -- 'except KeyError:' now actually
+// catches this).
 #pragma once
 
 #include <cstdint>
 #include <memory>
 #include <ostream>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
+#include "exceptions.hpp"
 #include "repr.hpp"
 
 namespace pyrt {
@@ -38,7 +40,7 @@ public:
                 return entry.second;
             }
         }
-        throw std::out_of_range("key not found");
+        throw KeyError("key not found");
     }
 
     // Iterates key/value pairs; the backend binds a Python 'for k in d'

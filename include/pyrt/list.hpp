@@ -10,10 +10,10 @@
 // consumer's ownership model.
 //
 // Indexing (.at()) supports Python's negative-index convention and
-// throws std::out_of_range on an out-of-bounds index -- a documented
-// placeholder for the real exception until py2cpp defines its own
-// runtime exception hierarchy (a later milestone, once try/except is
-// supported), matching the same approach already used by operators.hpp.
+// throws pyrt::IndexError on an out-of-bounds index (an earlier version
+// of this file, before py2cpp had its own exception hierarchy, threw
+// std::out_of_range instead -- 'except IndexError:' now actually catches
+// this).
 //
 // Backed by std::deque<T>, not std::vector<T>: std::vector<bool> is a
 // bit-packed specialization whose element access returns a proxy object
@@ -29,9 +29,9 @@
 #include <deque>
 #include <memory>
 #include <ostream>
-#include <stdexcept>
 #include <utility>
 
+#include "exceptions.hpp"
 #include "repr.hpp"
 
 namespace pyrt {
@@ -49,7 +49,7 @@ public:
         std::int64_t len = size();
         std::int64_t resolved = index < 0 ? index + len : index;
         if (resolved < 0 || resolved >= len) {
-            throw std::out_of_range("list index out of range");
+            throw IndexError("list index out of range");
         }
         return (*data_)[static_cast<std::size_t>(resolved)];
     }

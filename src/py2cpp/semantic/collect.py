@@ -28,6 +28,7 @@ from py2cpp import codes
 from py2cpp.diagnostics import DiagnosticEngine, SourceLocation
 from py2cpp.frontend.loader import SourceFile
 from py2cpp.semantic.annotations import resolve_annotation
+from py2cpp.semantic.exceptions import is_known_exception
 from py2cpp.semantic.symbols import (
     AttributeSymbol,
     ClassSymbol,
@@ -78,6 +79,13 @@ def _claim_name(
     defined_names: dict[str, SourceLocation],
     diagnostics: DiagnosticEngine,
 ) -> bool:
+    if is_known_exception(name):
+        diagnostics.error(
+            codes.DUPLICATE_DEFINITION,
+            f"'{name}' is a reserved built-in exception type name and can't be redefined",
+            location,
+        )
+        return False
     existing = defined_names.get(name)
     if existing is not None:
         diagnostics.error(

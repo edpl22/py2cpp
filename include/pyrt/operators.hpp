@@ -14,14 +14,19 @@
 // py2cpp targets GCC, Clang, and MSVC without compiler-specific
 // extensions.
 //
-// Until py2cpp defines its own runtime exception hierarchy (a later
-// milestone, once try/except is supported), these throw the closest
-// matching standard exception, std::overflow_error.
+// Overflow raises pyrt::OverflowError (an earlier version of this file,
+// before py2cpp had its own exception hierarchy, threw std::overflow_error
+// instead -- 'except OverflowError:' now actually catches this).
+// floordiv() additionally raises pyrt::ZeroDivisionError for a zero
+// divisor, implementing Python's floor (round-toward-negative-infinity)
+// division semantics, which differ from C++'s own truncating '/' for
+// operands of different signs (e.g. Python's -7 // 2 is -4, not -3).
 #pragma once
 
 #include <cstdint>
 #include <limits>
-#include <stdexcept>
+
+#include "exceptions.hpp"
 
 namespace pyrt {
 
@@ -30,10 +35,10 @@ inline std::int64_t add(std::int64_t lhs, std::int64_t rhs) {
     constexpr std::int64_t min_value = std::numeric_limits<std::int64_t>::min();
 
     if (rhs > 0 && lhs > max_value - rhs) {
-        throw std::overflow_error("int addition overflowed");
+        throw OverflowError("int addition overflowed");
     }
     if (rhs < 0 && lhs < min_value - rhs) {
-        throw std::overflow_error("int addition overflowed");
+        throw OverflowError("int addition overflowed");
     }
     return lhs + rhs;
 }
@@ -43,10 +48,10 @@ inline std::int64_t sub(std::int64_t lhs, std::int64_t rhs) {
     constexpr std::int64_t min_value = std::numeric_limits<std::int64_t>::min();
 
     if (rhs < 0 && lhs > max_value + rhs) {
-        throw std::overflow_error("int subtraction overflowed");
+        throw OverflowError("int subtraction overflowed");
     }
     if (rhs > 0 && lhs < min_value + rhs) {
-        throw std::overflow_error("int subtraction overflowed");
+        throw OverflowError("int subtraction overflowed");
     }
     return lhs - rhs;
 }
@@ -62,7 +67,7 @@ inline std::int64_t mul(std::int64_t lhs, std::int64_t rhs) {
     if (lhs == min_value || rhs == min_value) {
         bool safe = (lhs == min_value && rhs == 1) || (rhs == min_value && lhs == 1);
         if (!safe) {
-            throw std::overflow_error("int multiplication overflowed");
+            throw OverflowError("int multiplication overflowed");
         }
         return min_value;
     }
@@ -76,10 +81,26 @@ inline std::int64_t mul(std::int64_t lhs, std::int64_t rhs) {
     std::int64_t abs_rhs = rhs < 0 ? -rhs : rhs;
 
     if (abs_lhs > max_value / abs_rhs) {
-        throw std::overflow_error("int multiplication overflowed");
+        throw OverflowError("int multiplication overflowed");
     }
 
     return lhs * rhs;
+}
+
+inline std::int64_t floordiv(std::int64_t lhs, std::int64_t rhs) {
+    if (rhs == 0) {
+        throw ZeroDivisionError("integer division or modulo by zero");
+    }
+    constexpr std::int64_t min_value = std::numeric_limits<std::int64_t>::min();
+    if (lhs == min_value && rhs == -1) {
+        throw OverflowError("int floor division overflowed");
+    }
+    std::int64_t quotient = lhs / rhs;
+    std::int64_t remainder = lhs % rhs;
+    if (remainder != 0 && ((remainder < 0) != (rhs < 0))) {
+        --quotient;
+    }
+    return quotient;
 }
 
 }  // namespace pyrt

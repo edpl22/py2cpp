@@ -83,7 +83,8 @@ py2cpp/
 ├── .github/workflows/ci.yml       # ubuntu/macos/windows × py3.10-3.13, ruff+mypy+pytest
 ├── include/pyrt/                  # header-only C++ runtime
 │   ├── pyrt.hpp                   # umbrella header (sibling-relative includes! order matters, see its own comment)
-│   ├── operators.hpp              # overflow-checked add/sub/mul for int64
+│   ├── operators.hpp              # overflow-checked add/sub/mul/floordiv for int64
+│   ├── exceptions.hpp             # pyrt::PyException hierarchy (Decision E) — ValueError, TypeError, LookupError->{IndexError,KeyError}, ArithmeticError->{ZeroDivisionError,OverflowError}
 │   ├── string.hpp                 # pyrt::Str — UTF-8 bytes, whole-string ops only (no indexing yet)
 │   ├── repr.hpp                   # pyrt::detail::write_repr — shared print/repr dispatch (bool, Str, std::tuple)
 │   ├── print.hpp                  # variadic print; delegates to write_repr except a bare Str (unquoted)
@@ -105,9 +106,10 @@ py2cpp/
 │   │   ├── subset.py                # structural "is this syntax shape allowed" validator
 │   │   └── literals.py              # extract_int_literal(): handles '-2' == UnaryOp(USub, Constant(2))
 │   ├── semantic/
-│   │   ├── symbols.py               # ParameterSymbol, FunctionSymbol, SymbolTable
-│   │   ├── collect.py               # builds SymbolTable from FunctionDefs
-│   │   └── annotations.py           # resolve_annotation(): scalars + list[T]/dict[K,V]/set[T]/tuple[T,...] subscripts
+│   │   ├── symbols.py               # ParameterSymbol, FunctionSymbol, ClassSymbol, AttributeSymbol, MethodSymbol, SymbolTable
+│   │   ├── collect.py               # builds SymbolTable from FunctionDefs/ClassDefs
+│   │   ├── annotations.py           # resolve_annotation(): scalars + list[T]/dict[K,V]/set[T]/tuple[T,...] subscripts + known class names
+│   │   └── exceptions.py            # EXCEPTION_HIERARCHY: py2cpp's fixed, curated exception registry (see §6/§7, Decision E)
 │   ├── types/
 │   │   ├── model.py                  # Type, IntType, BoolType, StringType, ListType, DictType, SetType, TupleType
 │   │   └── join.py                   # join(), is_assignable() — bool widens to int, one-way; containers join only with an identical container type
@@ -143,21 +145,24 @@ py2cpp/
 | **M3** | ✅ done, committed, pushed | `StringType`, `pyrt::Str` (UTF-8 bytes), string literals, `+` concatenation, string comparisons, f-strings (no `!conversion`/`:format_spec`), `print(str)` |
 | **M4** | ✅ done, committed, pushed | `list`/`dict`/`set`/`tuple` literals, indexing (negative-index for list/tuple), `for x in <container>`, list comprehensions (range- and container-sourced, one optional `if`) |
 | **M5** | ✅ done, committed, pushed | Classes, `__init__`, single inheritance, closed-world virtual dispatch (Decision D, §6, now implemented) and polymorphic assignment |
-| **M6** | ⬜ not started | Exceptions (`try`/`except`/`raise`) — **needs the `pyrt` exception hierarchy design discussion** (Decision E, §6) before implementation |
+| **M6** | ✅ done, **not yet committed** | Exceptions: `try`/`except`/`raise`, a curated `pyrt` exception hierarchy (Decision E, §6, now implemented), floor division (`//`) |
 | **M7** | ⬜ not started | v0.1.0 polish: `docs/architecture.md`, `docs/adding-python-feature.md`, full example set, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI validation, PyPI Trusted Publishing release workflow |
 
 CI has been green through M2 on all 12 matrix jobs (ubuntu/macos/windows ×
-py3.10–3.13); M3/M4/M5 pass the full local acceptance suite (`ruff`, `mypy
---strict`, `pytest`, g++ compilation of every golden case) but haven't had a
-CI run confirmed since pushing — check GitHub Actions status before assuming
-green, per §2's "never claim a check passed without running it."
+py3.10–3.13); M3/M4/M5/M6 pass the full local acceptance suite (`ruff`,
+`mypy --strict`, `pytest`, g++ compilation of every golden case) but
+haven't had a CI run confirmed since pushing — check GitHub Actions status
+before assuming green, per §2's "never claim a check passed without
+running it."
 
-**Latest commits** (newest first): `69df8ad` (M5: classes, single
-inheritance, and virtual dispatch), `411acf9` (M4: containers and
-comprehensions), `f19eb43` (M3: strings and f-strings), `da8cccc` (CI-only
-fix: dropped a non-portable stderr assertion — Clang's Windows runtime
-doesn't print the same overflow message glibc's libstdc++ does; the actual
-safety guarantee, a nonzero exit code, held everywhere).
+**Latest commits** (newest first): `90ca2a4` (docs-only: mark M5 committed
+in HANDOFF.md), `69df8ad` (M5: classes, single inheritance, and virtual
+dispatch), `411acf9` (M4: containers and comprehensions), `f19eb43` (M3:
+strings and f-strings), `da8cccc` (CI-only fix: dropped a non-portable
+stderr assertion — Clang's Windows runtime doesn't print the same overflow
+message glibc's libstdc++ does; the actual safety guarantee, a nonzero
+exit code, held everywhere). M6's changes are implemented and locally
+verified but **not yet committed**.
 
 A real bug M4's manual smoke-testing caught before it shipped: `std::vector
 <bool>` is a bit-packed specialization whose element access returns a proxy
@@ -184,6 +189,20 @@ in `frontend/subset.py` — it may only ever be the receiver of `.attr`/
 non-constructor methods. Same lesson as M4: this only surfaced by actually
 compiling a hand-written smoke test (a self-referential linked-node class),
 not from unit tests over hand-built IR.
+
+A real bug M6's manual smoke-testing caught before it shipped: emitting a
+`try` with more than one `except` clause produced mismatched braces --
+each handler independently emitted both its own opening `'} catch (...) {'`
+and a standalone closing `'}'`, so a second handler's opening brace tried
+to close a block the first handler had already closed, and g++ failed with
+a cascade of "expected unqualified-id before 'catch'" errors starting at
+the *second* handler. Fixed by restructuring emission to match how
+`_emit_if`'s `elif`-chain already merges braces: only the handler bodies
+are indented/dedented per-handler, and exactly one standalone closing
+brace is written once, after the last handler. Same lesson as M4/M5 (see
+above): this shape is invisible to hand-built-IR unit tests unless the
+test specifically has two-or-more handlers, and only actually fails at the
+g++ compile step, not at the Python level.
 
 ---
 
@@ -255,16 +274,41 @@ variable can hold a derived instance (the polymorphism this decision
 exists to dispatch on). Construction (`Foo(args)`) compiles to
 `std::make_shared<Foo>(args)`.
 
-### Decision E — exception mapping: **NOT decided in detail, NOT implemented**
-Direction on record: a curated (not exhaustive) `pyrt::PyException`
-hierarchy mirroring a subset of Python's builtin exceptions
-(`ValueError`, `TypeError`, `IndexError`, `KeyError`, `ZeroDivisionError`,
-`OverflowError`), growing on demand. `except Foo:` → `catch (const
-pyrt::Foo&)`. **Full design discussion required before M6 implementation
-starts** — nothing beyond this direction is settled. Note that `List.at()`/
-`Dict.at()` currently throw plain `std::out_of_range`, and int overflow
-throws `std::overflow_error` — both explicitly documented as placeholders
-that this decision will eventually replace.
+### Decision E — exception mapping: **DECIDED, implemented**
+A curated (not exhaustive) `pyrt::PyException` hierarchy
+(`semantic/exceptions.py::EXCEPTION_HIERARCHY` on the Python side,
+`include/pyrt/exceptions.hpp` on the C++ side, kept in exact 1:1 sync):
+`Exception` (root; maps to the actual C++ class `PyException`),
+`ValueError`, `TypeError`, `RuntimeError`, `LookupError` →
+{`IndexError`, `KeyError`}, `ArithmeticError` → {`ZeroDivisionError`,
+`OverflowError`}. `except Foo:` → `catch (const pyrt::Foo&)`; `except Foo
+as e:` binds `e`; multiple `except` clauses become one chained
+try/catch (mirroring how `_emit_if` already chains `elif`); py2cpp itself
+rejects a `try` whose earlier `except` clause would make a later one
+unreachable (`P2C2004`, a new code — nothing existing fit this
+"unreachable handler" diagnostic kind). Each exception carries one `Str`
+message (`raise ValueError("msg")`); `.args`, `raise X from Y`, and
+`finally` are all deferred (no C++ equivalent for `finally` without real
+added complexity — an RAII scope-guard could do it later). An `except ...
+as e:` binding is *not* a first-class value: `e` may only be passed
+directly to `print(...)` or interpolated into an f-string (both go
+through `pyrt::print`/`pyrt::str`'s existing generic dispatch once
+`PyException` defines `operator<<`/`str()` overloads for itself) — never
+stored in another variable, annotated as a parameter type, or compared;
+see `types/model.py::ExceptionType`.
+
+`List.at()`/`Dict.at()` and int overflow, previously documented
+placeholders throwing plain `std::out_of_range`/`std::overflow_error`,
+now throw `pyrt::IndexError`/`pyrt::KeyError`/`pyrt::OverflowError` — so
+`except IndexError:` etc. actually catch what a user would expect. This
+also motivated adding floor division (`//`, `pyrt::floordiv`, Python's
+round-toward-negative-infinity semantics, not C++'s truncating `/`) as
+part of M6: without it, `ZeroDivisionError` would have had nothing to
+naturally trigger it (py2cpp still has no true `/`, since that needs
+`FloatType`, which doesn't exist). User-defined classes subclassing a
+builtin exception (e.g. `class ConfigError(ValueError): ...`, combining
+M5's class hierarchy with this one) is explicitly deferred to a later
+milestone — M5's and M6's inheritance systems don't interact yet.
 
 ### Additional decisions made during M2 (not in the original brief, surfaced by implementation)
 - **bool/int join policy** (user-approved): `bool` widens to `int`
@@ -365,6 +409,36 @@ that this decision will eventually replace.
   than worked around, since a workaround would just be `None` support by
   another name.
 
+### Scope calls made during M6 (flagged, not discussed in advance — all milestone-scoped per §2's carve-out)
+- **`try` supports one or more `except` clauses only** — no `try/else`,
+  no `finally` (see Decision E above). Each `except` names at most one
+  exception type (no `except (A, B):`) — separate `except` clauses cover
+  it; this was a complexity/value tradeoff (supporting a tuple of types
+  cleanly needs either N separate `catch` blocks sharing one body or a
+  single `catch` on their common ancestor, neither trivial), not a
+  fundamental limitation.
+- **Bare `raise` (re-raise) may only appear lexically inside an `except`
+  handler's body** — checked structurally in `frontend/subset.py` (a
+  conservative approximation of Python's own dynamic "no active exception
+  to re-raise" runtime error; conservative because it's a stricter,
+  lexical version of Python's real dynamic-call-stack rule, so it can
+  only reject programs Python would *also* reject, never accept one
+  Python would reject). `raise X from Y` (cause chaining) isn't
+  supported.
+- **`raise` requires a direct `ExcType(...)` call naming a known,
+  curated exception type** — `raise ValueError` (bare class, no call) and
+  `raise some_variable` (raising an already-constructed exception value)
+  are both rejected; exceptions aren't first-class values this milestone
+  (see Decision E), so there's no way to hold one in a variable to raise
+  later anyway.
+- A name that collides with a curated exception type (e.g. `class
+  ValueError: ...` or `def TypeError(): ...`) is rejected as a reserved
+  name at symbol-collection time, the same as any other duplicate
+  definition — avoids a genuinely confusing shadow between py2cpp's own
+  vocabulary and user code.
+- Comparing (`==`, `<`, etc.) two `ExceptionType` values is rejected, the
+  same as comparing two class instances (M5) — no dunder support yet.
+
 ---
 
 ## 7. Current type system & IR (exact state)
@@ -373,12 +447,16 @@ that this decision will eventually replace.
 `StringType`, `ListType(element_type)`, `DictType(key_type, value_type)`,
 `SetType(element_type)`, `TupleType(element_types: tuple[Type, ...])`,
 `ClassType(name)` (M5 — equality/hashing by name alone; the class's actual
-shape lives in `SymbolTable`, not on the type itself). `FloatType` and
-exception types don't exist yet — added only when their milestone needs
-them. `types/join.py` stays hierarchy-agnostic (only bool/int coercion);
-`ir/lower.py::_assignable()`/`_is_subclass()` are the one place that
-additionally know about class subtyping, composing the pure type-system
-rules with the class hierarchy — see the M5 entry in §6.
+shape lives in `SymbolTable`, not on the type itself), `ExceptionType(name)`
+(M6 — same shape as `ClassType`, but deliberately not a first-class value
+type; see the M6 entry in §6). `FloatType` doesn't exist yet — added only
+when a milestone needs it. `types/join.py` stays hierarchy-agnostic (only
+bool/int coercion); `ir/lower.py::_assignable()`/`_is_subclass()` are the
+one place that additionally know about *class* subtyping (not exception
+subtyping — that's a separate, simpler check, since `ExceptionType` values
+never need assignability at all; see `semantic/exceptions.py`'s own
+`is_exception_ancestor()`), composing the pure type-system rules with the
+class hierarchy — see the M5 entry in §6.
 
 **Symbols** (`semantic/symbols.py`, M5 additions): `AttributeSymbol`,
 `MethodSymbol` (like `FunctionSymbol` but excludes `self`, whose type is
@@ -390,6 +468,18 @@ base-aware member set walks the base chain via `SymbolTable.classes`, see
 gathers every class *name* in one pass before resolving any annotation, so
 a self- or forward-referencing attribute type (e.g. `self.next: Node`)
 resolves even though `Node` isn't finished being defined yet.
+
+**Exception registry** (`semantic/exceptions.py`, new in M6): a fixed,
+py2cpp-internal `EXCEPTION_HIERARCHY: dict[str, str | None]` (name →
+parent name) mirroring a curated subset of Python's builtins — *not*
+collected from source the way `ClassSymbol`/`FunctionSymbol` are, since
+users can't define new exception types yet (see §6). `is_known_exception()`,
+`is_exception_ancestor()`, and `cpp_exception_name()` (the one name that
+doesn't map to itself: `"Exception"` → `"PyException"`, the actual C++
+root class name) are the only three operations anything else needs from
+this module — `ir/lower.py`, `ir/validate.py`, `backend/emit_cpp.py`, and
+`semantic/collect.py` (to reserve these names against user redefinition)
+all import from here rather than duplicating the hierarchy.
 
 **IR nodes** (`ir/nodes.py`):
 - Expressions: `IRLiteral` (int), `IRStringLiteral`, `IRToStr` (Python
@@ -403,7 +493,9 @@ resolves even though `Node` isn't finished being defined yet.
   `std::get<N>(...)`), `IRListCompRange` (comprehension over `range(...)`),
   `IRListCompForEach` (comprehension over a container), `IRAttributeAccess`
   (`obj.attr` read, M5), `IRMethodCall` (`obj.method(args)`, M5),
-  `IRConstruct` (`ClassName(args)`, backed by `std::make_shared`, M5)
+  `IRConstruct` (`ClassName(args)`, backed by `std::make_shared`, M5).
+  `BinaryOp` gained `FLOORDIV` in M6 (`a // b`, backed by `pyrt::floordiv`)
+  alongside the existing `ADD`/`SUB`/`MUL`.
 - Statements: `IRReturn`, `IRPrintStmt`, `IRExprStmt`, `IRAssign` (with a
   `declare: bool` flag), `IRIf`, `IRWhile`, `IRFor` (raw int range loop),
   `IRForEach` (`for x in <container>`; binds `.first` for a `dict`, since
@@ -411,7 +503,12 @@ resolves even though `Node` isn't finished being defined yet.
   = value`, M5 — used for both a constructor's first-time attribute init
   and any later mutation; no `declare` flag, since the C++ struct member
   already exists as part of the class's own shape by the time any
-  statement runs)
+  statement runs). M6 additions: `IRRaise` (`exception_type: str | None`,
+  `message: IRExpr | None` — both `None` together means a bare re-raise,
+  `exception_type` set with `message` `None` means `raise Foo()`),
+  `IRTry` (`body`, `handlers: tuple[IRExceptHandler, ...]`) and
+  `IRExceptHandler` (`exception_type: str | None` — `None` is a bare
+  `except:`, `bound_name: str | None`, `body`).
 - `IRFunction`; M5 additions: `IRAttribute` (name+type), `IRMethod` (like
   `IRFunction` plus `is_virtual`/`is_override`, computed not user-declared
   — see Decision D in §6), `IRConstructor` (`base_args: tuple[IRExpr,...]
@@ -422,20 +519,22 @@ resolves even though `Node` isn't finished being defined yet.
   `needs_virtual_destructor`)
 - `IRModule` (now also carries `classes: tuple[IRClassDef, ...]`)
 
-**Diagnostic scheme** (`codes.py`): unchanged since M2 — `P2C1xxx` =
-frontend/subset shape, `P2C2xxx` = semantic/name resolution, `P2C3xxx` =
-type checking, `P2C9xxx` = internal compiler error (a py2cpp bug, never a
-user error). Full current list: `SYNTAX_ERROR` (1000),
-`UNSUPPORTED_SYNTAX` (1001), `MISSING_ANNOTATION` (1002),
-`UNDEFINED_NAME` (2001), `DUPLICATE_DEFINITION` (2002),
-`UNKNOWN_CALL_TARGET` (2003), `TYPE_MISMATCH` (3001),
-`ARGUMENT_COUNT_MISMATCH` (3002), `INTERNAL_ERROR` (9001). M3/M4/M5 reused
-these rather than adding new codes (e.g. an f-string `!conversion` is
-`UNSUPPORTED_SYNTAX`; a tuple out-of-range index is `TYPE_MISMATCH`; a
-class missing `__init__` is `UNSUPPORTED_SYNTAX`; an unknown attribute/
-method is `UNDEFINED_NAME`; a used-before-defined base class is
-`UNDEFINED_NAME`, mirroring the existing "function used before defined"
-check).
+**Diagnostic scheme** (`codes.py`): `P2C1xxx` = frontend/subset shape,
+`P2C2xxx` = semantic/name resolution, `P2C3xxx` = type checking, `P2C9xxx`
+= internal compiler error (a py2cpp bug, never a user error). Full current
+list: `SYNTAX_ERROR` (1000), `UNSUPPORTED_SYNTAX` (1001),
+`MISSING_ANNOTATION` (1002), `UNDEFINED_NAME` (2001),
+`DUPLICATE_DEFINITION` (2002), `UNKNOWN_CALL_TARGET` (2003),
+`UNREACHABLE_EXCEPT_CLAUSE` (2004, **new in M6** — no existing code fit
+"this except clause can never fire" cleanly), `TYPE_MISMATCH` (3001),
+`ARGUMENT_COUNT_MISMATCH` (3002), `INTERNAL_ERROR` (9001). M3/M4/M5/M6
+otherwise reused existing codes rather than adding new ones (e.g. an
+f-string `!conversion` is `UNSUPPORTED_SYNTAX`; a tuple out-of-range
+index is `TYPE_MISMATCH`; a class missing `__init__` is
+`UNSUPPORTED_SYNTAX`; an unknown attribute/method or unknown exception
+type is `UNDEFINED_NAME`/`UNKNOWN_CALL_TARGET`; a used-before-defined base
+class is `UNDEFINED_NAME`, mirroring the existing "function used before
+defined" check).
 
 ---
 
@@ -498,6 +597,11 @@ lift any of these; none are architectural dead ends.
   needs cross-checking; trust CI's green checkmarks over local-only runs
   for compiler-specific behavior.
 
+M5's and M6's own scoping restrictions (classes/inheritance/`self`;
+`try`/`except`/`raise`) are listed in their own "Scope calls made during
+M5/M6" subsections under §6 rather than duplicated here, since each is
+tightly coupled to the semantic decision it was made alongside.
+
 ---
 
 ## 9. How to build & verify (exact commands that must all pass)
@@ -544,11 +648,13 @@ architecture rules, absolute development rules) as the first message if
 you still have it, since it's the authoritative source for rules this
 document only summarizes. Then say something like:
 
-> M0 through M5 are already implemented, committed, and pushed to
-> https://github.com/edpl22/py2cpp — read `HANDOFF.md` in the repo root
-> for exact current state. Continue with M6 (exceptions) — Decision E
-> (HANDOFF.md §6) needs a full design discussion before implementation
-> starts, unlike M5's Decision D which was already fully settled going in.
+> M0 through M5 are implemented, committed, and pushed to
+> https://github.com/edpl22/py2cpp; M6 (exceptions) is implemented and
+> locally verified but **not yet committed** — read `HANDOFF.md` in the
+> repo root for exact current state, then run `git status`/`git diff` to
+> see M6's actual changes before doing anything else. Once M6 is
+> committed and pushed (only when explicitly asked, per §2), continue
+> with M7 (v0.1.0 polish).
 
 If you don't have the original brief anymore, this document plus a look at
 the actual repo (`git log`, `src/py2cpp/`, `tests/`) should be enough for

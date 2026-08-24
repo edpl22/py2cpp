@@ -23,15 +23,19 @@ from py2cpp.ir.nodes import (
     IRMethod,
     IRModule,
     IRPrintStmt,
+    IRRaise,
     IRReturn,
     IRStmt,
+    IRTry,
     IRWhile,
 )
+from py2cpp.semantic.exceptions import is_known_exception
 from py2cpp.types.join import is_assignable
 from py2cpp.types.model import (
     BoolType,
     ClassType,
     DictType,
+    ExceptionType,
     IntType,
     ListType,
     SetType,
@@ -123,7 +127,17 @@ def _validate_stmt(stmt: IRStmt) -> None:
     if isinstance(stmt, IRPrintStmt):
         for arg in stmt.args:
             if not isinstance(
-                arg.type, (IntType, BoolType, StringType, ListType, DictType, SetType, TupleType)
+                arg.type,
+                (
+                    IntType,
+                    BoolType,
+                    StringType,
+                    ListType,
+                    DictType,
+                    SetType,
+                    TupleType,
+                    ExceptionType,
+                ),
             ):
                 raise InternalCompilerError(f"'print' argument has unsupported type {arg.type}")
     elif isinstance(stmt, IRExprStmt):
@@ -159,5 +173,24 @@ def _validate_stmt(stmt: IRStmt) -> None:
         _validate_statements(stmt.body)
     elif isinstance(stmt, IRForEach):
         _validate_statements(stmt.body)
+    elif isinstance(stmt, IRTry):
+        _validate_statements(stmt.body)
+        for handler in stmt.handlers:
+            if handler.exception_type is not None and not is_known_exception(
+                handler.exception_type
+            ):
+                raise InternalCompilerError(
+                    f"'except' handler names unknown exception type {handler.exception_type!r}"
+                )
+            _validate_statements(handler.body)
+    elif isinstance(stmt, IRRaise):
+        if stmt.exception_type is not None and not is_known_exception(stmt.exception_type):
+            raise InternalCompilerError(
+                f"'raise' names unknown exception type {stmt.exception_type!r}"
+            )
+        if stmt.message is not None and not isinstance(stmt.message.type, StringType):
+            raise InternalCompilerError(
+                f"'raise' message must be 'str', got {stmt.message.type}"
+            )
     else:
         raise InternalCompilerError(f"unexpected IR statement: {stmt!r}")  # pragma: no cover

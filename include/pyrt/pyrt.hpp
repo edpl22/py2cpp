@@ -18,8 +18,9 @@
 // own definition point -- not re-looked-up at each instantiation -- so
 // repr.hpp must be included, in full, before any header whose templates
 // call into it.
-#include "operators.hpp"
 #include "string.hpp"
+#include "exceptions.hpp"
+#include "operators.hpp"
 #include "repr.hpp"
 #include "print.hpp"
 #include "list.hpp"

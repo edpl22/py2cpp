@@ -12,6 +12,7 @@ from py2cpp.backend.emit_cpp import emit_module
 from py2cpp.diagnostics import SourceLocation
 from py2cpp.ir.nodes import (
     BinaryOp,
+    IRAssign,
     IRAttribute,
     IRAttributeAccess,
     IRAttributeAssign,
@@ -20,6 +21,7 @@ from py2cpp.ir.nodes import (
     IRConstruct,
     IRConstructor,
     IRDictLiteral,
+    IRExceptHandler,
     IRForEach,
     IRFunction,
     IRIndex,
@@ -31,9 +33,11 @@ from py2cpp.ir.nodes import (
     IRModule,
     IRParameter,
     IRPrintStmt,
+    IRRaise,
     IRReturn,
     IRStringLiteral,
     IRToStr,
+    IRTry,
     IRTupleIndex,
     IRTupleLiteral,
     IRVarRef,
@@ -476,3 +480,169 @@ def test_emits_method_call_via_arrow() -> None:
     output = emit_module(module)
 
     assert "pyrt::print(a->speak());" in output
+
+
+def test_emits_floor_division() -> None:
+    module = IRModule(
+        classes=(),
+        name="m",
+        functions=(),
+        main_body=(
+            IRPrintStmt(
+                args=(
+                    IRBinaryExpr(
+                        op=BinaryOp.FLOORDIV,
+                        left=IRVarRef(name="a", type=IntType()),
+                        right=IRVarRef(name="b", type=IntType()),
+                        type=IntType(),
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "pyrt::print(pyrt::floordiv(a, b));" in output
+
+
+def test_emits_try_single_except_with_binding() -> None:
+    module = IRModule(
+        classes=(),
+        name="m",
+        functions=(),
+        main_body=(
+            IRTry(
+                body=(
+                    IRAssign(
+                        name="result",
+                        value=IRBinaryExpr(
+                            op=BinaryOp.FLOORDIV,
+                            left=IRVarRef(name="a", type=IntType()),
+                            right=IRVarRef(name="b", type=IntType()),
+                            type=IntType(),
+                        ),
+                        type=IntType(),
+                        declare=False,
+                        location=_LOCATION,
+                    ),
+                ),
+                handlers=(
+                    IRExceptHandler(
+                        exception_type="ZeroDivisionError",
+                        bound_name="e",
+                        body=(
+                            IRPrintStmt(
+                                args=(IRVarRef(name="e", type=IntType()),), location=_LOCATION
+                            ),
+                        ),
+                    ),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "try {" in output
+    assert "result = pyrt::floordiv(a, b);" in output
+    assert "} catch (const pyrt::ZeroDivisionError& e) {" in output
+    assert "pyrt::print(e);" in output
+
+
+def test_emits_try_multiple_handlers_as_one_chain() -> None:
+    module = IRModule(
+        classes=(),
+        name="m",
+        functions=(),
+        main_body=(
+            IRTry(
+                body=(),
+                handlers=(
+                    IRExceptHandler(exception_type="ValueError", bound_name=None, body=()),
+                    IRExceptHandler(exception_type="TypeError", bound_name=None, body=()),
+                    IRExceptHandler(exception_type=None, bound_name=None, body=()),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "} catch (const pyrt::ValueError&) {" in output
+    assert "} catch (const pyrt::TypeError&) {" in output
+    assert "} catch (...) {" in output
+    # Exactly one standalone closing brace ends the whole chain -- no
+    # handler emits its own separate trailing brace.
+    assert output.count("catch") == 3
+
+
+def test_emits_raise_with_message() -> None:
+    module = IRModule(
+        classes=(),
+        name="m",
+        functions=(),
+        main_body=(
+            IRRaise(
+                exception_type="ValueError",
+                message=IRStringLiteral(value="bad", type=StringType()),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert 'throw pyrt::ValueError(pyrt::Str("bad"));' in output
+
+
+def test_emits_raise_without_message() -> None:
+    module = IRModule(
+        classes=(),
+        name="m",
+        functions=(),
+        main_body=(
+            IRRaise(exception_type="ValueError", message=None, location=_LOCATION),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "throw pyrt::ValueError(pyrt::Str());" in output
+
+
+def test_emits_exception_alias_to_pyexception() -> None:
+    module = IRModule(
+        classes=(),
+        name="m",
+        functions=(),
+        main_body=(
+            IRTry(
+                body=(),
+                handlers=(
+                    IRExceptHandler(exception_type="Exception", bound_name="e", body=()),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+    )
+
+    output = emit_module(module)
+
+    assert "} catch (const pyrt::PyException& e) {" in output
+
+
+def test_emits_bare_reraise() -> None:
+    module = IRModule(
+        classes=(),
+        name="m",
+        functions=(),
+        main_body=(IRRaise(exception_type=None, message=None, location=_LOCATION),),
+    )
+
+    output = emit_module(module)
+
+    assert "throw;" in output
