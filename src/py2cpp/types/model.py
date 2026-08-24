@@ -26,3 +26,9 @@ class IntType(Type):
 class BoolType(Type):
     def __str__(self) -> str:
         return "bool"
+
+
+@dataclass(frozen=True)
+class StringType(Type):
+    def __str__(self) -> str:
+        return "str"

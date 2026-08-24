@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 
 from py2cpp.diagnostics import SourceLocation
-from py2cpp.ir.nodes import IRFunction, IRModule, IRReturn, IRVarRef
+from py2cpp.ir.nodes import IRFunction, IRModule, IRPrintStmt, IRReturn, IRVarRef
 from py2cpp.ir.validate import InternalCompilerError, validate_module
-from py2cpp.types.model import IntType
+from py2cpp.types.model import IntType, StringType
 
 _LOCATION = SourceLocation(filename=Path("test.py"), line=1, column=1)
 
@@ -42,6 +42,17 @@ def test_return_type_mismatch_raises_internal_error() -> None:
 
     with pytest.raises(InternalCompilerError):
         validate_module(module)
+
+
+def test_print_with_string_argument_passes() -> None:
+    module = IRModule(
+        name="m",
+        functions=(),
+        main_body=(
+            IRPrintStmt(args=(IRVarRef(name="s", type=StringType()),), location=_LOCATION),
+        ),
+    )
+    validate_module(module)  # must not raise
 
 
 def test_duplicate_function_name_raises_internal_error() -> None:

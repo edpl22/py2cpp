@@ -24,7 +24,7 @@ from py2cpp.ir.nodes import (
     IRWhile,
 )
 from py2cpp.types.join import is_assignable
-from py2cpp.types.model import BoolType, IntType
+from py2cpp.types.model import BoolType, IntType, StringType
 
 
 class InternalCompilerError(Exception):
@@ -69,7 +69,7 @@ def _validate_stmt(stmt: IRStmt) -> None:
         raise InternalCompilerError("'return' reached the IR outside a function's final position")
     if isinstance(stmt, IRPrintStmt):
         for arg in stmt.args:
-            if not isinstance(arg.type, (IntType, BoolType)):
+            if not isinstance(arg.type, (IntType, BoolType, StringType)):
                 raise InternalCompilerError(f"'print' argument has unsupported type {arg.type}")
     elif isinstance(stmt, IRExprStmt):
         pass

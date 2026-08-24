@@ -173,6 +173,26 @@ class _SubsetValidator(ast.NodeVisitor):
                     help_text="a runtime-computed step arrives in a later milestone",
                 )
 
+    def _validate_fstring(self, node: ast.JoinedStr) -> None:
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                continue
+            if isinstance(value, ast.FormattedValue):
+                if value.conversion != -1:
+                    self._reject(
+                        value,
+                        "f-string conversions ('!r', '!s', '!a') are not supported "
+                        "in this milestone",
+                    )
+                if value.format_spec is not None:
+                    self._reject(
+                        value.format_spec,
+                        "f-string format specs are not supported in this milestone",
+                    )
+                self._validate_expr(value.value)
+            else:
+                self._reject(value, "unsupported f-string component")  # pragma: no cover
+
     def _validate_call(self, node: ast.Call) -> None:
         if not isinstance(node.func, ast.Name):
             self._reject(node, "only calls to a plain function name are supported")
@@ -187,8 +207,12 @@ class _SubsetValidator(ast.NodeVisitor):
 
     def _validate_expr(self, node: ast.expr) -> None:
         if isinstance(node, ast.Constant):
-            if not isinstance(node.value, int) or isinstance(node.value, bool):
-                self._reject(node, "only integer literals are supported in this milestone")
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, str)):
+                self._reject(
+                    node, "only integer and string literals are supported in this milestone"
+                )
+        elif isinstance(node, ast.JoinedStr):
+            self._validate_fstring(node)
         elif isinstance(node, ast.Name):
             pass
         elif isinstance(node, ast.BinOp):

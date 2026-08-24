@@ -12,3 +12,4 @@
 // and when this header is found via -I<repo>/include instead.
 #include "operators.hpp"
 #include "print.hpp"
+#include "string.hpp"

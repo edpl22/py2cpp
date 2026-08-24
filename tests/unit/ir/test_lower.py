@@ -22,10 +22,12 @@ from py2cpp.ir.nodes import (
     IRModule,
     IRPrintStmt,
     IRReturn,
+    IRStringLiteral,
+    IRToStr,
     IRWhile,
 )
 from py2cpp.semantic.collect import collect_symbols
-from py2cpp.types.model import BoolType, IntType
+from py2cpp.types.model import BoolType, IntType, StringType
 
 _PATH = Path("test.py")
 
@@ -225,3 +227,74 @@ def test_print_accepts_bool_argument() -> None:
     assert module is not None
     print_stmt = module.main_body[0]
     assert isinstance(print_stmt, IRPrintStmt)
+
+
+def test_string_literal_and_concatenation_lower() -> None:
+    diagnostics, module = _lower(
+        "def greet(name: str) -> str:\n    return 'hello, ' + name\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    return_stmt = module.functions[0].body[0]
+    assert isinstance(return_stmt, IRReturn)
+    value = return_stmt.value
+    assert isinstance(value, IRBinaryExpr)
+    assert isinstance(value.type, StringType)
+    assert isinstance(value.left, IRStringLiteral)
+    assert value.left.value == "hello, "
+
+
+def test_string_minus_string_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f(a: str, b: str) -> str:\n    return a - b\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_string_plus_int_is_rejected() -> None:
+    diagnostics, module = _lower(
+        "def f(a: str, b: int) -> str:\n    return a + b\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_fstring_lowers_literal_parts_and_wraps_non_string_values() -> None:
+    diagnostics, module = _lower(
+        "def describe(n: int) -> str:\n    return f'n = {n}!'\n"
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    return_stmt = module.functions[0].body[0]
+    assert isinstance(return_stmt, IRReturn)
+    # f'n = {n}!' folds to ("n = " + str(n)) + "!"
+    outer = return_stmt.value
+    assert isinstance(outer, IRBinaryExpr)
+    assert isinstance(outer.type, StringType)
+    assert isinstance(outer.right, IRStringLiteral)
+    assert outer.right.value == "!"
+    inner = outer.left
+    assert isinstance(inner, IRBinaryExpr)
+    assert isinstance(inner.left, IRStringLiteral)
+    assert inner.left.value == "n = "
+    assert isinstance(inner.right, IRToStr)
+
+
+def test_fstring_rejects_unsupported_value_type() -> None:
+    diagnostics, module = _lower(
+        "def f(a: int) -> str:\n    return f'{print}'\n\n\nf(1)\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+
+
+def test_print_accepts_string_argument() -> None:
+    diagnostics, module = _lower("print('hello')\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    print_stmt = module.main_body[0]
+    assert isinstance(print_stmt, IRPrintStmt)
+    assert isinstance(print_stmt.args[0], IRStringLiteral)

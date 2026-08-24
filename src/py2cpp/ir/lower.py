@@ -54,6 +54,8 @@ from py2cpp.ir.nodes import (
     IRPrintStmt,
     IRReturn,
     IRStmt,
+    IRStringLiteral,
+    IRToStr,
     IRTruthy,
     IRVarRef,
     IRWhile,
@@ -62,7 +64,7 @@ from py2cpp.ir.nodes import (
 from py2cpp.semantic.annotations import resolve_annotation
 from py2cpp.semantic.symbols import FunctionSymbol, SymbolTable
 from py2cpp.types.join import is_assignable, join
-from py2cpp.types.model import BoolType, IntType, Type
+from py2cpp.types.model import BoolType, IntType, StringType, Type
 
 _BINOP_MAP: dict[type[ast.operator], BinaryOp] = {
     ast.Add: BinaryOp.ADD,
@@ -546,7 +548,7 @@ def _lower_print(
         )
         return None
     for arg in args:
-        if not isinstance(arg.type, (IntType, BoolType)):
+        if not isinstance(arg.type, (IntType, BoolType, StringType)):
             diagnostics.error(
                 codes.TYPE_MISMATCH,
                 f"'print' does not support values of type '{arg.type}' in this milestone",
@@ -653,6 +655,59 @@ def _lower_call(
     return IRCall(callee=callee_name, args=tuple(args), type=symbol.return_type)
 
 
+def _lower_fstring(
+    node: ast.JoinedStr,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    parts: list[IRExpr] = []
+    ok = True
+    for value in node.values:
+        if isinstance(value, ast.Constant):
+            assert isinstance(value.value, str)
+            parts.append(IRStringLiteral(value=value.value, type=StringType()))
+            continue
+
+        assert isinstance(value, ast.FormattedValue)
+        inner = _lower_expr(
+            value.value,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if inner is None:
+            ok = False
+            continue
+        if not isinstance(inner.type, (IntType, BoolType, StringType)):
+            diagnostics.error(
+                codes.TYPE_MISMATCH,
+                f"f-string does not support values of type '{inner.type}' in this milestone",
+                _location(source, value.value),
+            )
+            ok = False
+            continue
+        if isinstance(inner.type, StringType):
+            parts.append(inner)
+        else:
+            parts.append(IRToStr(operand=inner, type=StringType()))
+
+    if not ok:
+        return None
+    if not parts:
+        return IRStringLiteral(value="", type=StringType())
+
+    result = parts[0]
+    for part in parts[1:]:
+        result = IRBinaryExpr(op=BinaryOp.ADD, left=result, right=part, type=StringType())
+    return result
+
+
 def _lower_expr(
     node: ast.expr,
     scope: dict[str, Type],
@@ -673,6 +728,19 @@ def _lower_expr(
             )
             return None
         return IRLiteral(value=literal_value, type=IntType())
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return IRStringLiteral(value=node.value, type=StringType())
+
+    if isinstance(node, ast.JoinedStr):
+        return _lower_fstring(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
 
     if isinstance(node, ast.Name):
         declared = scope.get(node.id)
@@ -703,6 +771,15 @@ def _lower_expr(
         )
         if left is None or right is None:
             return None
+        # '+' between two strings is concatenation, not arithmetic; str
+        # doesn't support '-'/'*' (falls through to the int check below,
+        # which rejects it with a clear diagnostic).
+        if (
+            op is BinaryOp.ADD
+            and isinstance(left.type, StringType)
+            and isinstance(right.type, StringType)
+        ):
+            return IRBinaryExpr(op=BinaryOp.ADD, left=left, right=right, type=StringType())
         # bool operands auto-convert to int here (both C++ and this
         # project's join rules treat bool as an int subtype), so a
         # comparison result like '(a > 0)' can be summed directly.

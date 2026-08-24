@@ -44,6 +44,23 @@ class IRLiteral:
 
 
 @dataclass(frozen=True)
+class IRStringLiteral:
+    value: str
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRToStr:
+    """Converts a non-string value to its Python str() representation, for
+    embedding into an f-string (e.g. the 'x' in f"n={x}"). Backed by
+    pyrt::str() overloads, mirroring IRTruthy's role for conditions.
+    """
+
+    operand: IRExpr
+    type: Type
+
+
+@dataclass(frozen=True)
 class IRVarRef:
     name: str
     type: Type
@@ -97,7 +114,18 @@ class IRCall:
     type: Type
 
 
-IRExpr = IRLiteral | IRVarRef | IRBinaryExpr | IRCompare | IRLogicalExpr | IRNot | IRTruthy | IRCall
+IRExpr = (
+    IRLiteral
+    | IRStringLiteral
+    | IRToStr
+    | IRVarRef
+    | IRBinaryExpr
+    | IRCompare
+    | IRLogicalExpr
+    | IRNot
+    | IRTruthy
+    | IRCall
+)
 
 
 @dataclass(frozen=True)

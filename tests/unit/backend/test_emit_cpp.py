@@ -18,9 +18,11 @@ from py2cpp.ir.nodes import (
     IRParameter,
     IRPrintStmt,
     IRReturn,
+    IRStringLiteral,
+    IRToStr,
     IRVarRef,
 )
-from py2cpp.types.model import IntType
+from py2cpp.types.model import IntType, StringType
 
 _LOCATION = SourceLocation(filename=Path("test.py"), line=1, column=1)
 
@@ -92,3 +94,49 @@ def test_keyword_parameter_name_is_escaped() -> None:
 
     assert "std::int64_t identity(std::int64_t class_)" in output
     assert "return class_;" in output
+
+
+def test_emits_string_literal_and_concatenation() -> None:
+    function = IRFunction(
+        name="greet",
+        parameters=(IRParameter(name="name", type=StringType()),),
+        return_type=StringType(),
+        body=(
+            IRReturn(
+                value=IRBinaryExpr(
+                    op=BinaryOp.ADD,
+                    left=IRStringLiteral(value="hello, ", type=StringType()),
+                    right=IRVarRef(name="name", type=StringType()),
+                    type=StringType(),
+                ),
+                location=_LOCATION,
+            ),
+        ),
+        location=_LOCATION,
+    )
+    module = IRModule(name="greet", functions=(function,), main_body=())
+
+    output = emit_module(module)
+
+    assert "pyrt::Str greet(pyrt::Str name) {" in output
+    assert 'return (pyrt::Str("hello, ") + name);' in output
+
+
+def test_emits_to_str_conversion() -> None:
+    function = IRFunction(
+        name="describe",
+        parameters=(IRParameter(name="n", type=IntType()),),
+        return_type=StringType(),
+        body=(
+            IRReturn(
+                value=IRToStr(operand=IRVarRef(name="n", type=IntType()), type=StringType()),
+                location=_LOCATION,
+            ),
+        ),
+        location=_LOCATION,
+    )
+    module = IRModule(name="describe", functions=(function,), main_body=())
+
+    output = emit_module(module)
+
+    assert "return pyrt::str(n);" in output

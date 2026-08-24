@@ -93,3 +93,33 @@ def test_rejects_decorators() -> None:
 def test_rejects_keyword_call_arguments() -> None:
     diagnostics = _validate("def f(a: int) -> int:\n    return a\n\n\nprint(f(a=1))\n")
     assert diagnostics.has_errors
+
+
+def test_accepts_string_literal_and_concatenation() -> None:
+    diagnostics = _validate(
+        "def greet(name: str) -> str:\n    return 'hello, ' + name\n\n\nprint(greet('world'))\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_accepts_fstring() -> None:
+    diagnostics = _validate(
+        "def describe(n: int) -> str:\n    return f'n = {n}'\n\n\nprint(describe(3))\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_rejects_fstring_conversion() -> None:
+    diagnostics = _validate(
+        "def describe(n: int) -> str:\n    return f'n = {n!r}'\n\n\nprint(describe(3))\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_fstring_format_spec() -> None:
+    diagnostics = _validate(
+        "def describe(n: int) -> str:\n    return f'n = {n:04d}'\n\n\nprint(describe(3))\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX

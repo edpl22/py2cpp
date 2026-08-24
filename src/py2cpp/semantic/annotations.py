@@ -12,9 +12,13 @@ import ast
 from py2cpp import codes
 from py2cpp.diagnostics import DiagnosticEngine, SourceLocation
 from py2cpp.frontend.loader import SourceFile
-from py2cpp.types.model import BoolType, IntType, Type
+from py2cpp.types.model import BoolType, IntType, StringType, Type
 
-_SUPPORTED_ANNOTATIONS: dict[str, Type] = {"int": IntType(), "bool": BoolType()}
+_SUPPORTED_ANNOTATIONS: dict[str, Type] = {
+    "int": IntType(),
+    "bool": BoolType(),
+    "str": StringType(),
+}
 
 
 def resolve_annotation(
@@ -48,6 +52,6 @@ def resolve_annotation(
         codes.MISSING_ANNOTATION,
         f"{what} has an unsupported type annotation",
         location,
-        help_text="supported types in this milestone: int, bool",
+        help_text="supported types in this milestone: int, bool, str",
     )
     return None

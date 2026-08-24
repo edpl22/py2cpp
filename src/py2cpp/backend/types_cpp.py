@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from py2cpp.types.model import BoolType, IntType, Type
+from py2cpp.types.model import BoolType, IntType, StringType, Type
 
 
 def cpp_type(t: Type) -> str:
@@ -10,4 +10,6 @@ def cpp_type(t: Type) -> str:
         return "std::int64_t"
     if isinstance(t, BoolType):
         return "bool"
+    if isinstance(t, StringType):
+        return "pyrt::Str"
     raise TypeError(f"no C++ representation registered for type {t!r}")

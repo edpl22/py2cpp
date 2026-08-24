@@ -15,6 +15,7 @@ indistinguishable from Python returning "one of the operands".
 from __future__ import annotations
 
 from py2cpp.backend.mangling import escape_identifier
+from py2cpp.backend.string_literals import cpp_string_literal
 from py2cpp.backend.types_cpp import cpp_type
 from py2cpp.backend.writer import CodeWriter
 from py2cpp.ir.nodes import (
@@ -37,11 +38,14 @@ from py2cpp.ir.nodes import (
     IRPrintStmt,
     IRReturn,
     IRStmt,
+    IRStringLiteral,
+    IRToStr,
     IRTruthy,
     IRVarRef,
     IRWhile,
     LogicalOp,
 )
+from py2cpp.types.model import StringType
 
 _BINARY_OP_HELPER = {
     BinaryOp.ADD: "pyrt::add",
@@ -189,9 +193,17 @@ def _emit_condition(expr: IRExpr) -> str:
 def _emit_expr(expr: IRExpr) -> str:
     if isinstance(expr, IRLiteral):
         return str(expr.value)
+    if isinstance(expr, IRStringLiteral):
+        return f"pyrt::Str({cpp_string_literal(expr.value)})"
+    if isinstance(expr, IRToStr):
+        return f"pyrt::str({_emit_expr(expr.operand)})"
     if isinstance(expr, IRVarRef):
         return escape_identifier(expr.name)
     if isinstance(expr, IRBinaryExpr):
+        if isinstance(expr.type, StringType):
+            # String '+' is native pyrt::Str concatenation, not the
+            # overflow-checked int helper -- overflow doesn't apply here.
+            return f"({_emit_expr(expr.left)} + {_emit_expr(expr.right)})"
         helper = _BINARY_OP_HELPER[expr.op]
         return f"{helper}({_emit_expr(expr.left)}, {_emit_expr(expr.right)})"
     if isinstance(expr, IRCompare):
