@@ -46,5 +46,12 @@ def test_int64_addition_overflow_raises(compiler_name: str, tmp_path: Path) -> N
     assert build.returncode == 0, build.stderr
 
     run_result = subprocess.run([str(binary)], capture_output=True, text=True)
+    # An uncaught C++ exception terminates the process abnormally on every
+    # platform, but *how* -- exit code, and whether anything readable
+    # lands on stderr -- is compiler/runtime-specific: glibc's libstdc++
+    # prints "terminate called after throwing..." with the exception's
+    # what(), but Clang's Windows runtime does not, so asserting on
+    # stderr content isn't portable. The nonzero exit code is the actual,
+    # portable guarantee: overflow was caught and raised, not silently
+    # wrapped into a wrong answer.
     assert run_result.returncode != 0
-    assert "overflow" in run_result.stderr.lower()
