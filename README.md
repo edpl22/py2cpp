@@ -1,5 +1,7 @@
 # py2cpp
 
+This is a vibe-coded project motivated by curiosity of the capabilities of AI.
+
 A transpiler that translates a well-defined subset of **Python 3.10+** into
 readable, compilable **C++17**. py2cpp is itself written entirely in Python;
 C++ is only ever an output format, plus a small header-only compatibility
