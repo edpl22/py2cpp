@@ -25,6 +25,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      # Golden-case tests (tests/integration/test_golden.py) discover every
+      # C++ compiler on PATH via shutil.which and skip (never fake) whichever
+      # isn't present -- these steps exist so all three of g++/clang++/cl
+      # actually get exercised on the platforms where they're available,
+      # instead of silently skipping.
+      - name: Install clang (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Ruff
         run: ruff check .
 

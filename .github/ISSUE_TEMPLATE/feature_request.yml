@@ -1,0 +1,34 @@
+name: Feature / language subset request
+description: Request support for a Python construct py2cpp doesn't handle yet, or propose extending the supported subset.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: construct
+    attributes:
+      label: What Python construct or behavior is missing?
+      description: A short code sample showing what you'd want py2cpp to accept.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why do you need it?
+      description: What are you trying to build, and what's blocking you without this?
+    validations:
+      required: true
+
+  - type: textarea
+    id: semantics
+    attributes:
+      label: Semantic edge cases you're aware of
+      description: |
+        py2cpp's core rule is that it never guesses when Python semantics can't be reproduced safely in C++ -- it rejects with a diagnostic instead. If this construct has tricky semantics (e.g. aliasing, overflow, ordering guarantees CPython doesn't actually promise), mentioning them here helps a lot.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I've checked the README's roadmap and restrictions list, and this isn't already listed as deliberately out of scope for a reason I'd need to argue against.

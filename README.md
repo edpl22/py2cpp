@@ -7,15 +7,19 @@ readable, compilable **C++17**. py2cpp is itself written entirely in Python;
 C++ is only ever an output format, plus a small header-only compatibility
 runtime (`pyrt`) linked by generated code.
 
-> **Status:** M4 complete. py2cpp compiles functions with annotated `int`/
-> `bool`/`str`/`list`/`dict`/`set`/`tuple`, arithmetic, comparisons,
+> **Status:** M0–M6 complete; M7 (v0.1.0 polish) in progress. py2cpp
+> compiles functions with annotated `int`/`bool`/`str`/`list`/`dict`/
+> `set`/`tuple`, arithmetic (including overflow-checked `//`), comparisons,
 > `and`/`or`/`not`, local variables, `if`/`elif`/`else`, `while`,
 > `for ... in range(...)` and `for ... in <container>`, string
-> concatenation, f-strings, list/dict/set/tuple literals, indexing, and
-> list comprehensions to compilable C++17. Container mutation
+> concatenation, f-strings, list/dict/set/tuple literals, indexing, list
+> comprehensions, classes with single inheritance and virtual dispatch,
+> and `try`/`except`/`raise` against a curated exception hierarchy — all
+> to compilable, warning-clean C++17. Container mutation
 > (`.append(...)`, `d[k] = v`), `in`/`not in`, dict/set comprehensions,
-> and tuple iteration/unpacking aren't supported yet. See the roadmap
-> below for what's not there yet.
+> tuple iteration/unpacking, and user-defined exception subclasses aren't
+> supported yet. See [Restrictions](#restrictions) and the roadmap below
+> for what's not there yet.
 
 ## Why not just use Python?
 
@@ -37,7 +41,9 @@ py2cpp deliberately does **not** attempt to support:
 
 Programs that require these constructs are rejected with a diagnostic, not
 silently mistranslated. See [`docs/architecture.md`](docs/architecture.md)
-(coming in a later milestone) for the full design rationale.
+for the full design rationale, and
+[`docs/adding-python-feature.md`](docs/adding-python-feature.md) if you're
+looking to contribute a new feature.
 
 ## Installation
 
@@ -50,7 +56,7 @@ pip install py2cpp
 ## Development setup
 
 ```bash
-git clone <this-repository>
+git clone https://github.com/edpl22/py2cpp.git
 cd py2cpp
 
 python -m venv .venv
@@ -80,18 +86,66 @@ g++ -std=c++17 build/classify.cpp -o build/classify
 ./build/classify
 ```
 
+See [`examples/`](examples/) for more: [`strings.py`](examples/strings.py),
+[`containers.py`](examples/containers.py), [`classes.py`](examples/classes.py),
+and [`exceptions.py`](examples/exceptions.py) each focus on one area of the
+supported subset. Every example is compiled with `g++ -Wall -Wextra` and its
+output diffed against plain CPython as part of keeping this README honest.
+
+## Restrictions
+
+py2cpp's core rule is that it never guesses when Python semantics can't be
+reproduced safely in C++ — it rejects the program with a diagnostic
+instead. The restrictions below are real, deliberate scope limits, not
+oversights; each can be lifted in a future milestone. The most notable:
+
+- No container mutation yet (`.append(...)`, `d[k] = v`, `.add(...)`) —
+  containers are built via literals/comprehensions and read via
+  indexing/iteration only.
+- No `in`/`not in`.
+- List comprehensions only (no dict/set comprehensions), one `for` clause
+  and at most one `if` clause each.
+- Tuple indexing requires a compile-time integer literal; tuples can't be
+  iterated or unpacked.
+- No early or multiple `return` points — `return` may only be a
+  function's final top-level statement.
+- Chained comparisons (`a < b < c`) are rejected, not mistranslated.
+- No `Optional`/`None` for class-typed values, so a genuinely
+  null-terminated or cyclic structure can't be built yet.
+- User-defined exception subclasses aren't supported; exceptions are
+  matched against a fixed, curated hierarchy
+  (`ValueError`/`TypeError`/`RuntimeError`/`LookupError` →
+  `IndexError`/`KeyError`/`ArithmeticError` →
+  `ZeroDivisionError`/`OverflowError`).
+- `try` supports `except` clauses but not `finally` or `try`/`else`.
+- Only single inheritance; no class variables, static/class methods,
+  properties, or operator-overload dunders.
+
+See [`docs/architecture.md`](docs/architecture.md) for the design
+rationale behind these, and open an issue using the feature-request
+template if one of them is blocking you.
+
 ## Roadmap
 
 | Milestone | Scope |
 |---|---|
-| M0 | Repository bootstrap, CLI skeleton, CI |
-| M1 | Minimal functions/arithmetic pipeline: Python → AST → IR → C++ → compiled → run |
+| M0 | Repository bootstrap, CLI skeleton, CI — **done** |
+| M1 | Minimal functions/arithmetic pipeline: Python → AST → IR → C++ → compiled → run — **done** |
 | M2 | Control flow (`if`/`while`/`for`) and static type inference — **done** |
 | M3 | Strings and f-strings — **done** |
 | M4 | Containers (`list`/`dict`/`set`/`tuple`) and comprehensions — **done** |
-| M5 | Classes and single inheritance |
-| M6 | Exceptions |
-| M7 | v0.1.0 polish: docs, examples, cross-compiler CI, packaging |
+| M5 | Classes and single inheritance — **done** |
+| M6 | Exceptions — **done** |
+| M7 | v0.1.0 polish: docs, examples, cross-compiler CI, packaging — in progress |
+
+## Contributing
+
+Issues and pull requests are welcome. Please read
+[`docs/adding-python-feature.md`](docs/adding-python-feature.md) before
+proposing a new language feature, and note the [Restrictions](#restrictions)
+above — many gaps are deliberate scope decisions, not oversights, so it
+helps to check whether one is already tracked before opening an issue.
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
 
 ## License
 

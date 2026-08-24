@@ -22,8 +22,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/py2cpp/py2cpp"
-Issues = "https://github.com/py2cpp/py2cpp/issues"
+Homepage = "https://github.com/edpl22/py2cpp"
+Issues = "https://github.com/edpl22/py2cpp/issues"
+Changelog = "https://github.com/edpl22/py2cpp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 py2cpp = "py2cpp.cli:main"

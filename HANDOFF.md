@@ -80,7 +80,17 @@ differently from the Python source.
 
 ```
 py2cpp/
-├── .github/workflows/ci.yml       # ubuntu/macos/windows × py3.10-3.13, ruff+mypy+pytest
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml                  # ubuntu/macos/windows × py3.10-3.13, ruff+mypy+pytest; installs clang (Linux)/sets up MSVC (Windows) so the golden tests' g++/clang++/cl parametrization isn't all-skip
+│   │   └── release.yml             # build+twine-check on every push/PR; publish to PyPI via Trusted Publishing (OIDC) on GitHub Release "published"
+│   └── ISSUE_TEMPLATE/             # bug_report.yml, feature_request.yml, config.yml
+├── docs/
+│   ├── architecture.md             # pipeline walkthrough: frontend -> semantic -> types -> ir -> backend, Two kinds of failure, reference semantics, closed-world dispatch
+│   └── adding-python-feature.md    # step-by-step guide for contributing a new language feature, using a hypothetical len() as the running example
+├── examples/                       # classify.py (existing) + strings.py, containers.py, classes.py, exceptions.py (M7) — each compiled+diffed against CPython before being added, see §4
+├── CHANGELOG.md                    # Keep a Changelog format; Unreleased + 0.1.0 sections
+├── CODE_OF_CONDUCT.md              # Contributor Covenant v2.1
 ├── include/pyrt/                  # header-only C++ runtime
 │   ├── pyrt.hpp                   # umbrella header (sibling-relative includes! order matters, see its own comment)
 │   ├── operators.hpp              # overflow-checked add/sub/mul/floordiv for int64
@@ -91,15 +101,13 @@ py2cpp/
 │   ├── list.hpp                   # pyrt::List<T> — shared_ptr<deque<T>>-backed, negative indexing
 │   ├── dict.hpp                   # pyrt::Dict<K,V> — shared_ptr<vector<pair<K,V>>>-backed, insertion-ordered
 │   └── set.hpp                    # pyrt::Set<T> — shared_ptr<deque<T>>-backed, insertion-ordered, dedups on construction
-├── examples/
-│   └── classify.py                # matches README quick start; keep this working
 ├── src/py2cpp/
 │   ├── __init__.py                 # __version__ lives here (single source of truth)
 │   ├── __main__.py
 │   ├── cli.py                      # argparse; --version works, full flag surface declared
 │   ├── compiler.py                 # CompilerOptions/CompilationResult/compile_source() — the public API
 │   ├── diagnostics.py              # SourceLocation, Severity, Diagnostic, DiagnosticEngine
-│   ├── codes.py                    # P2C#### diagnostic code registry (see §8)
+│   ├── codes.py                    # P2C#### diagnostic code registry (see §7)
 │   ├── frontend/
 │   │   ├── loader.py                # SourceFile, load_source(), SourceLoadError
 │   │   ├── parser.py                # ast.parse() wrapper -> Diagnostic on SyntaxError
@@ -111,8 +119,8 @@ py2cpp/
 │   │   ├── annotations.py           # resolve_annotation(): scalars + list[T]/dict[K,V]/set[T]/tuple[T,...] subscripts + known class names
 │   │   └── exceptions.py            # EXCEPTION_HIERARCHY: py2cpp's fixed, curated exception registry (see §6/§7, Decision E)
 │   ├── types/
-│   │   ├── model.py                  # Type, IntType, BoolType, StringType, ListType, DictType, SetType, TupleType
-│   │   └── join.py                   # join(), is_assignable() — bool widens to int, one-way; containers join only with an identical container type
+│   │   ├── model.py                  # Type, IntType, BoolType, StringType, ListType, DictType, SetType, TupleType, ClassType, ExceptionType
+│   │   └── join.py                   # join(), is_assignable() — bool widens to int, one-way; containers join only with an identical container type; hierarchy-agnostic (class/exception subtyping lives in ir/lower.py instead)
 │   ├── ir/
 │   │   ├── nodes.py                  # typed IR dataclasses (see §7)
 │   │   ├── lower.py                  # THE big one: combined name-resolution + type-check + IR build
@@ -146,14 +154,47 @@ py2cpp/
 | **M4** | ✅ done, committed, pushed | `list`/`dict`/`set`/`tuple` literals, indexing (negative-index for list/tuple), `for x in <container>`, list comprehensions (range- and container-sourced, one optional `if`) |
 | **M5** | ✅ done, committed, pushed | Classes, `__init__`, single inheritance, closed-world virtual dispatch (Decision D, §6, now implemented) and polymorphic assignment |
 | **M6** | ✅ done, committed, pushed | Exceptions: `try`/`except`/`raise`, a curated `pyrt` exception hierarchy (Decision E, §6, now implemented), floor division (`//`) |
-| **M7** | ⬜ not started | v0.1.0 polish: `docs/architecture.md`, `docs/adding-python-feature.md`, full example set, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI validation, PyPI Trusted Publishing release workflow |
+| **M7** | 🔶 implemented locally, not yet committed | v0.1.0 polish: `docs/architecture.md`, `docs/adding-python-feature.md`, full example set, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI validation, PyPI Trusted Publishing release workflow |
 
 CI has been green through M2 on all 12 matrix jobs (ubuntu/macos/windows ×
 py3.10–3.13); M3/M4/M5/M6 pass the full local acceptance suite (`ruff`,
 `mypy --strict`, `pytest`, g++ compilation of every golden case) but
 haven't had a CI run confirmed since pushing — check GitHub Actions status
 before assuming green, per §2's "never claim a check passed without
-running it."
+running it." M7's CI changes (§4 below) are in the same boat, plus two
+things that are genuinely **NOT RUN** and can't be verified from this
+environment: whether `clang++`/`cl` actually get installed and exercised
+the way `ci.yml` now expects on GitHub's hosted runners, and whether
+`.github/workflows/release.yml`'s `build`/`publish` jobs actually succeed
+(`build`/`twine` aren't installed locally — they're CI-only tooling, not
+added to `requirements.txt`, since nothing in local dev needs them). Both
+need a real CI run to confirm.
+
+M7 added four new example programs (`examples/strings.py`,
+`containers.py`, `classes.py`, `exceptions.py`) alongside the existing
+`classify.py`. Each was actually transpiled, compiled with
+`g++ -std=c++17 -Wall -Wextra` (zero warnings), run, and diffed against
+plain CPython's stdout before being committed to the repo — the same
+manual-smoke-test discipline every feature milestone has used, applied
+here to documentation-facing code instead of a new language feature. Two
+real mistakes this caught, worth remembering for future example/doc
+writing: (1) an initial draft called `str(self.area())` as a normal
+function call inside a class's `describe()` method — `str(...)` is only
+ever synthesized internally by f-string lowering (`IRToStr`), not
+recognized as a general user-callable, so this failed to lower; fixed by
+using an f-string instead. (2) an initial `containers.py` printed a
+`set[int]` directly in a spot where its element values didn't happen to
+share CPython's actual (hash-based, unspecified) iteration order —
+`pyrt::Set` is deliberately insertion-ordered (see §6/§8), a real,
+already-accepted divergence from CPython for internal golden tests, but
+one that's confusing to show off in a public-facing example without
+comment; fixed by summing the set's contents (order-independent) instead
+of printing it raw. `tests/cases/valid/containers.py`'s own golden
+fixture prints a raw `set[int]` too and still passes only because its
+specific small integer values happen to coincide with CPython's actual
+iteration order for that dataset — that's a coincidence of the existing
+fixture, not a guarantee; don't read it as evidence the ordering divergence
+isn't real.
 
 **Latest commits** (newest first): `08f87ea` (M6: exceptions,
 try/except/raise, and floor division), `90ca2a4` (docs-only: mark M5
@@ -222,12 +263,13 @@ These were flagged in the project brief as requiring explicit discussion
 before their dependent architecture gets built. Status of each:
 
 ### Decision A — Python `int` representation: **DECIDED, implemented**
-`std::int64_t`. All arithmetic (`+ - *`) routes through `pyrt::add/sub/mul`,
-which check bounds *before* the operation (portable, no compiler-specific
-`__builtin_*_overflow`) and throw `std::overflow_error` on overflow — never
-silently wraps, never relies on signed-overflow UB. The full `pyrt`
-exception hierarchy (Decision E) is deferred to M6; `std::overflow_error`
-is a deliberate placeholder, not a premature commitment.
+`std::int64_t`. All arithmetic (`+ - * //`) routes through
+`pyrt::add/sub/mul/floordiv`, which check bounds *before* the operation
+(portable, no compiler-specific `__builtin_*_overflow`) and throw on
+overflow — never silently wraps, never relies on signed-overflow UB.
+Overflow now throws `pyrt::OverflowError` (Decision E's exception
+hierarchy, implemented in M6); it threw plain `std::overflow_error` from
+M1 through M5, back when `pyrt` had no exception hierarchy of its own yet.
 
 ### Decision B — Python `str` / Unicode: **DECIDED, implemented**
 `pyrt::Str` wraps a UTF-8 `std::string`. Per the approved scope for M3,
@@ -439,6 +481,53 @@ milestone — M5's and M6's inheritance systems don't interact yet.
 - Comparing (`==`, `<`, etc.) two `ExceptionType` values is rejected, the
   same as comparing two class instances (M5) — no dunder support yet.
 
+### Scope calls made during M7 (flagged, not discussed in advance — docs/tooling, not language-subset, but still worth flagging per §2's spirit)
+- **`CODE_OF_CONDUCT.md`'s enforcement contact** was filled in with an
+  email address rather than left as a placeholder or routed through
+  GitHub Issues (which would make a conduct report public) — check that
+  the address in the file is actually the one you want published before
+  this gets pushed; it's easy to change and low-stakes since nothing is
+  committed yet.
+- **PyPI release trigger**: `.github/workflows/release.yml`'s `publish`
+  job only runs on a GitHub Release being *published* (not a bare
+  `git push --tags`) — the PyPA-recommended pattern, since cutting a
+  Release is a deliberate, reviewable action distinct from pushing a tag.
+  A separate `build` job (sdist + wheel + `twine check`) runs on every
+  push to `main` and every PR, so packaging breakage is caught long
+  before a real release attempt, without needing PyPI credentials to
+  run it.
+- **PyPI Trusted Publishing needs one external, one-time step this
+  session cannot perform**: on pypi.org, under the `py2cpp` project's
+  (once created) publishing settings, a maintainer must add a trusted
+  publisher pointing at `edpl22/py2cpp`, workflow file `release.yml`,
+  environment `pypi`. Until that's done, `release.yml`'s `publish` job
+  will fail with an OIDC/authorization error the first time a Release is
+  published — this is expected, not a bug in the workflow, and is exactly
+  the kind of external account action that has to happen outside an
+  agent session. The `py2cpp` name was confirmed available on PyPI
+  (checked at write time — names can be claimed by someone else in the
+  meantime, so re-check before the first real publish).
+- **Cross-compiler CI**: `ci.yml` now explicitly installs `clang` on the
+  Linux job (`apt-get install clang`) and sets up the MSVC dev environment
+  on the Windows job (`ilammy/msvc-dev-cmd@v1`) so `tests/integration/
+  test_golden.py`'s existing `g++`/`clang++`/`cl` parametrization actually
+  exercises all three instead of skipping two of them. **Deliberately not
+  done**: forcing a real GNU `g++` onto the macOS job via Homebrew (macOS's
+  own `g++`/`gcc` are just aliases to Apple Clang) — `brew install gcc`
+  is slow and would add real time to every cell of the OS × Python-version
+  matrix for coverage that substantially overlaps with `clang++`, already
+  exercised on that job. If cross-compiler coverage on macOS specifically
+  becomes a priority, revisit this rather than assuming it was an
+  oversight.
+- Considered and rejected duplicating `tests/cases/valid/*.py` fixtures
+  as the new `examples/*.py` files. The test fixtures are optimized for
+  exhaustively exercising edge cases (single-element tuples, negative
+  indexing, re-raise chains); the examples are meant to read as small,
+  plausible programs a newcomer skims to understand *why* a feature is
+  useful, so they were written fresh, narrower in scope, and specifically
+  verified to match CPython's actual output (see §4's M7 entry for the
+  two bugs that caught).
+
 ---
 
 ## 7. Current type system & IR (exact state)
@@ -638,6 +727,16 @@ GitHub CLI is installed and authenticated in this environment
 (`C:\Program Files\GitHub CLI\gh.exe`, account `edpl22`) — use it for CI
 status, not guessing.
 
+Packaging check (mirrors `.github/workflows/release.yml`'s `build` job;
+**not yet run in this environment** — `build`/`twine` are CI-only tooling,
+not part of `requirements.txt`, so this is NOT RUN until someone actually
+runs it, in CI or in a disposable venv, not the project's own `.venv`):
+```bash
+python -m pip install build twine   # in a disposable venv, not .venv
+python -m build
+twine check dist/*
+```
+
 ---
 
 ## 10. What to tell a fresh Claude Code session
@@ -648,9 +747,17 @@ architecture rules, absolute development rules) as the first message if
 you still have it, since it's the authoritative source for rules this
 document only summarizes. Then say something like:
 
-> M0 through M6 are already implemented, committed, and pushed to
-> https://github.com/edpl22/py2cpp — read `HANDOFF.md` in the repo root
-> for exact current state. Continue with M7 (v0.1.0 polish).
+> M0 through M6 are implemented, committed, and pushed to
+> https://github.com/edpl22/py2cpp; M7 (v0.1.0 polish) is implemented
+> locally but not yet committed — read `HANDOFF.md` in the repo root for
+> exact current state, including the two external/unverified items under
+> §6's "Scope calls made during M7" (PyPI trusted-publisher setup, a real
+> CI run confirming the new cross-compiler steps). Once M7 is committed,
+> pushed, and CI-confirmed, the project has no further milestone defined
+> yet — decide the post-v0.1.0 roadmap with the user rather than
+> inventing one (candidates already flagged as open gaps: container
+> mutation, `in`/`not in`, user-defined exception subclasses,
+> `Optional`/`None` for class types — see §5/§6/§8).
 
 If you don't have the original brief anymore, this document plus a look at
 the actual repo (`git log`, `src/py2cpp/`, `tests/`) should be enough for
