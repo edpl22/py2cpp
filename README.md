@@ -7,9 +7,10 @@ readable, compilable **C++17**. py2cpp is itself written entirely in Python;
 C++ is only ever an output format, plus a small header-only compatibility
 runtime (`pyrt`) linked by generated code.
 
-> **Status:** early bootstrap (M0). The compiler pipeline does not transpile
-> anything yet — only `py2cpp --version` is currently functional. See the
-> roadmap below.
+> **Status:** M2 complete. py2cpp compiles functions with annotated `int`/
+> `bool`, arithmetic, comparisons, `and`/`or`/`not`, local variables,
+> `if`/`elif`/`else`, `while`, and `for ... in range(...)` to compilable
+> C++17. See the roadmap below for what's not there yet.
 
 ## Why not just use Python?
 
@@ -69,11 +70,10 @@ pytest
 ## Quick start
 
 ```bash
-py2cpp --version
+py2cpp examples/classify.py -o build/ --emit-runtime
+g++ -std=c++17 build/classify.cpp -o build/classify
+./build/classify
 ```
-
-Transpilation (`py2cpp input.py -o build/`) is not implemented yet; it
-arrives with milestone M1.
 
 ## Roadmap
 
@@ -81,7 +81,7 @@ arrives with milestone M1.
 |---|---|
 | M0 | Repository bootstrap, CLI skeleton, CI |
 | M1 | Minimal functions/arithmetic pipeline: Python → AST → IR → C++ → compiled → run |
-| M2 | Control flow (`if`/`while`/`for`) and static type inference |
+| M2 | Control flow (`if`/`while`/`for`) and static type inference — **done** |
 | M3 | Strings and f-strings |
 | M4 | Containers (`list`/`dict`/`set`/`tuple`) and comprehensions |
 | M5 | Classes and single inheritance |

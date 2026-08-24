@@ -20,3 +20,9 @@ class Type:
 class IntType(Type):
     def __str__(self) -> str:
         return "int"
+
+
+@dataclass(frozen=True)
+class BoolType(Type):
+    def __str__(self) -> str:
+        return "bool"

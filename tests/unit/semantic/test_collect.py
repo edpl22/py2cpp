@@ -21,9 +21,7 @@ def _collect(text: str) -> tuple[DiagnosticEngine, SymbolTable]:
 
 
 def test_collects_function_signature() -> None:
-    diagnostics, table = _collect(
-        "def add(a: int, b: int) -> int:\n    return a + b\n"
-    )
+    diagnostics, table = _collect("def add(a: int, b: int) -> int:\n    return a + b\n")
     assert not diagnostics.has_errors
     symbol = table.functions["add"]
     assert [p.name for p in symbol.parameters] == ["a", "b"]

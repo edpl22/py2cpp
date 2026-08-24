@@ -9,8 +9,22 @@ were reported).
 
 from __future__ import annotations
 
-from py2cpp.ir.nodes import IRFunction, IRModule, IRPrintStmt, IRReturn
-from py2cpp.types.model import IntType
+from collections.abc import Sequence
+
+from py2cpp.ir.nodes import (
+    IRAssign,
+    IRExprStmt,
+    IRFor,
+    IRFunction,
+    IRIf,
+    IRModule,
+    IRPrintStmt,
+    IRReturn,
+    IRStmt,
+    IRWhile,
+)
+from py2cpp.types.join import is_assignable
+from py2cpp.types.model import BoolType, IntType
 
 
 class InternalCompilerError(Exception):
@@ -27,22 +41,56 @@ def validate_module(module: IRModule) -> None:
         seen_names.add(function.name)
         _validate_function(function)
 
-    for stmt in module.main_body:
-        if not isinstance(stmt, IRPrintStmt):
-            raise InternalCompilerError(f"unexpected top-level IR statement: {stmt!r}")
-        for arg in stmt.args:
-            if not isinstance(arg.type, IntType):
-                raise InternalCompilerError(f"'print' argument has non-int type {arg.type}")
+    _validate_statements(module.main_body)
 
 
 def _validate_function(function: IRFunction) -> None:
-    if len(function.body) != 1 or not isinstance(function.body[0], IRReturn):
+    if not function.body or not isinstance(function.body[-1], IRReturn):
         raise InternalCompilerError(
-            f"function '{function.name}' body must be exactly one return statement"
+            f"function '{function.name}' body must end in a 'return' statement"
         )
-    value = function.body[0].value
-    if value.type != function.return_type:
+    _validate_statements(function.body[:-1])
+
+    return_stmt = function.body[-1]
+    if not is_assignable(return_stmt.value.type, function.return_type):
         raise InternalCompilerError(
             f"function '{function.name}' declares return type {function.return_type} "
-            f"but its return value has type {value.type}"
+            f"but its return value has type {return_stmt.value.type}"
         )
+
+
+def _validate_statements(stmts: Sequence[IRStmt]) -> None:
+    for stmt in stmts:
+        _validate_stmt(stmt)
+
+
+def _validate_stmt(stmt: IRStmt) -> None:
+    if isinstance(stmt, IRReturn):
+        raise InternalCompilerError("'return' reached the IR outside a function's final position")
+    if isinstance(stmt, IRPrintStmt):
+        for arg in stmt.args:
+            if not isinstance(arg.type, (IntType, BoolType)):
+                raise InternalCompilerError(f"'print' argument has unsupported type {arg.type}")
+    elif isinstance(stmt, IRExprStmt):
+        pass
+    elif isinstance(stmt, IRAssign):
+        if not is_assignable(stmt.value.type, stmt.type):
+            raise InternalCompilerError(
+                f"'{stmt.name}' is declared {stmt.type} but assigned a value of type "
+                f"{stmt.value.type}"
+            )
+    elif isinstance(stmt, IRIf):
+        if not isinstance(stmt.condition.type, BoolType):
+            raise InternalCompilerError("'if' condition reaching the IR must be 'bool'")
+        _validate_statements(stmt.then_body)
+        _validate_statements(stmt.else_body)
+    elif isinstance(stmt, IRWhile):
+        if not isinstance(stmt.condition.type, BoolType):
+            raise InternalCompilerError("'while' condition reaching the IR must be 'bool'")
+        _validate_statements(stmt.body)
+    elif isinstance(stmt, IRFor):
+        if stmt.step == 0:
+            raise InternalCompilerError("'for' step reaching the IR must not be zero")
+        _validate_statements(stmt.body)
+    else:
+        raise InternalCompilerError(f"unexpected IR statement: {stmt!r}")  # pragma: no cover

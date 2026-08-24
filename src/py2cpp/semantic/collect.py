@@ -13,10 +13,8 @@ import ast
 from py2cpp import codes
 from py2cpp.diagnostics import DiagnosticEngine, SourceLocation
 from py2cpp.frontend.loader import SourceFile
+from py2cpp.semantic.annotations import resolve_annotation
 from py2cpp.semantic.symbols import FunctionSymbol, ParameterSymbol, SymbolTable
-from py2cpp.types.model import IntType, Type
-
-_SUPPORTED_ANNOTATIONS: dict[str, Type] = {"int": IntType()}
 
 
 def collect_symbols(
@@ -50,39 +48,6 @@ def _location(source: SourceFile, node: ast.AST) -> SourceLocation:
     )
 
 
-def _resolve_annotation(
-    node: ast.expr | None,
-    fallback_location: SourceLocation,
-    source: SourceFile,
-    diagnostics: DiagnosticEngine,
-    *,
-    what: str,
-) -> Type | None:
-    if node is None:
-        diagnostics.error(
-            codes.MISSING_ANNOTATION,
-            f"{what} requires an explicit type annotation",
-            fallback_location,
-            help_text=(
-                "py2cpp does not infer types across a function boundary; "
-                "annotate it, e.g. 'x: int'"
-            ),
-        )
-        return None
-
-    location = _location(source, node)
-    if isinstance(node, ast.Name) and node.id in _SUPPORTED_ANNOTATIONS:
-        return _SUPPORTED_ANNOTATIONS[node.id]
-
-    diagnostics.error(
-        codes.MISSING_ANNOTATION,
-        f"{what} has an unsupported type annotation",
-        location,
-        help_text="supported types in this milestone: int",
-    )
-    return None
-
-
 def _collect_function(
     node: ast.FunctionDef, source: SourceFile, diagnostics: DiagnosticEngine
 ) -> FunctionSymbol | None:
@@ -92,7 +57,7 @@ def _collect_function(
     parameters: list[ParameterSymbol] = []
     for arg in node.args.args:
         arg_location = _location(source, arg)
-        arg_type = _resolve_annotation(
+        arg_type = resolve_annotation(
             arg.annotation, arg_location, source, diagnostics, what=f"parameter '{arg.arg}'"
         )
         if arg_type is None:
@@ -100,7 +65,7 @@ def _collect_function(
             continue
         parameters.append(ParameterSymbol(name=arg.arg, type=arg_type, location=arg_location))
 
-    return_type = _resolve_annotation(
+    return_type = resolve_annotation(
         node.returns, location, source, diagnostics, what=f"function '{node.name}'s return value"
     )
 
