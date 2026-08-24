@@ -145,7 +145,7 @@ py2cpp/
 | **M3** | ✅ done, committed, pushed | `StringType`, `pyrt::Str` (UTF-8 bytes), string literals, `+` concatenation, string comparisons, f-strings (no `!conversion`/`:format_spec`), `print(str)` |
 | **M4** | ✅ done, committed, pushed | `list`/`dict`/`set`/`tuple` literals, indexing (negative-index for list/tuple), `for x in <container>`, list comprehensions (range- and container-sourced, one optional `if`) |
 | **M5** | ✅ done, committed, pushed | Classes, `__init__`, single inheritance, closed-world virtual dispatch (Decision D, §6, now implemented) and polymorphic assignment |
-| **M6** | ✅ done, **not yet committed** | Exceptions: `try`/`except`/`raise`, a curated `pyrt` exception hierarchy (Decision E, §6, now implemented), floor division (`//`) |
+| **M6** | ✅ done, committed, pushed | Exceptions: `try`/`except`/`raise`, a curated `pyrt` exception hierarchy (Decision E, §6, now implemented), floor division (`//`) |
 | **M7** | ⬜ not started | v0.1.0 polish: `docs/architecture.md`, `docs/adding-python-feature.md`, full example set, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI validation, PyPI Trusted Publishing release workflow |
 
 CI has been green through M2 on all 12 matrix jobs (ubuntu/macos/windows ×
@@ -155,14 +155,14 @@ haven't had a CI run confirmed since pushing — check GitHub Actions status
 before assuming green, per §2's "never claim a check passed without
 running it."
 
-**Latest commits** (newest first): `90ca2a4` (docs-only: mark M5 committed
-in HANDOFF.md), `69df8ad` (M5: classes, single inheritance, and virtual
-dispatch), `411acf9` (M4: containers and comprehensions), `f19eb43` (M3:
-strings and f-strings), `da8cccc` (CI-only fix: dropped a non-portable
-stderr assertion — Clang's Windows runtime doesn't print the same overflow
-message glibc's libstdc++ does; the actual safety guarantee, a nonzero
-exit code, held everywhere). M6's changes are implemented and locally
-verified but **not yet committed**.
+**Latest commits** (newest first): `08f87ea` (M6: exceptions,
+try/except/raise, and floor division), `90ca2a4` (docs-only: mark M5
+committed in HANDOFF.md), `69df8ad` (M5: classes, single inheritance, and
+virtual dispatch), `411acf9` (M4: containers and comprehensions),
+`f19eb43` (M3: strings and f-strings), `da8cccc` (CI-only fix: dropped a
+non-portable stderr assertion — Clang's Windows runtime doesn't print the
+same overflow message glibc's libstdc++ does; the actual safety
+guarantee, a nonzero exit code, held everywhere).
 
 A real bug M4's manual smoke-testing caught before it shipped: `std::vector
 <bool>` is a bit-packed specialization whose element access returns a proxy
@@ -648,13 +648,9 @@ architecture rules, absolute development rules) as the first message if
 you still have it, since it's the authoritative source for rules this
 document only summarizes. Then say something like:
 
-> M0 through M5 are implemented, committed, and pushed to
-> https://github.com/edpl22/py2cpp; M6 (exceptions) is implemented and
-> locally verified but **not yet committed** — read `HANDOFF.md` in the
-> repo root for exact current state, then run `git status`/`git diff` to
-> see M6's actual changes before doing anything else. Once M6 is
-> committed and pushed (only when explicitly asked, per §2), continue
-> with M7 (v0.1.0 polish).
+> M0 through M6 are already implemented, committed, and pushed to
+> https://github.com/edpl22/py2cpp — read `HANDOFF.md` in the repo root
+> for exact current state. Continue with M7 (v0.1.0 polish).
 
 If you don't have the original brief anymore, this document plus a look at
 the actual repo (`git log`, `src/py2cpp/`, `tests/`) should be enough for
