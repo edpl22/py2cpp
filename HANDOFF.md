@@ -142,7 +142,7 @@ py2cpp/
 | **M2** | ✅ done, committed, pushed | `if/elif/else`, `while`, `for ... in range(...)`, comparisons, `and/or/not`, local variables (plain + annotated assignment), flow-sensitive type joins, `BoolType` |
 | **M3** | ✅ done, committed, pushed | `StringType`, `pyrt::Str` (UTF-8 bytes), string literals, `+` concatenation, string comparisons, f-strings (no `!conversion`/`:format_spec`), `print(str)` |
 | **M4** | ✅ done, committed, pushed | `list`/`dict`/`set`/`tuple` literals, indexing (negative-index for list/tuple), `for x in <container>`, list comprehensions (range- and container-sourced, one optional `if`) |
-| **M5** | ✅ done, **not yet committed** | Classes, `__init__`, single inheritance, closed-world virtual dispatch (Decision D, §6, now implemented) and polymorphic assignment |
+| **M5** | ✅ done, committed, pushed | Classes, `__init__`, single inheritance, closed-world virtual dispatch (Decision D, §6, now implemented) and polymorphic assignment |
 | **M6** | ⬜ not started | Exceptions (`try`/`except`/`raise`) — **needs the `pyrt` exception hierarchy design discussion** (Decision E, §6) before implementation |
 | **M7** | ⬜ not started | v0.1.0 polish: `docs/architecture.md`, `docs/adding-python-feature.md`, full example set, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI validation, PyPI Trusted Publishing release workflow |
 
@@ -152,13 +152,12 @@ py3.10–3.13); M3/M4/M5 pass the full local acceptance suite (`ruff`, `mypy
 CI run confirmed since pushing — check GitHub Actions status before assuming
 green, per §2's "never claim a check passed without running it."
 
-**Latest commits** (newest first): `411acf9` (M4: containers and
+**Latest commits** (newest first): `69df8ad` (M5: classes, single
+inheritance, and virtual dispatch), `411acf9` (M4: containers and
 comprehensions), `f19eb43` (M3: strings and f-strings), `da8cccc` (CI-only
 fix: dropped a non-portable stderr assertion — Clang's Windows runtime
 doesn't print the same overflow message glibc's libstdc++ does; the actual
-safety guarantee, a nonzero exit code, held everywhere). M5's changes are
-implemented and locally verified but **not yet committed** — see the end of
-this session's work for the proposed commit message.
+safety guarantee, a nonzero exit code, held everywhere).
 
 A real bug M4's manual smoke-testing caught before it shipped: `std::vector
 <bool>` is a bit-packed specialization whose element access returns a proxy
@@ -545,15 +544,11 @@ architecture rules, absolute development rules) as the first message if
 you still have it, since it's the authoritative source for rules this
 document only summarizes. Then say something like:
 
-> M0 through M4 are implemented, committed, and pushed to
-> https://github.com/edpl22/py2cpp; M5 (classes/inheritance) is
-> implemented and locally verified but **not yet committed** — read
-> `HANDOFF.md` in the repo root for exact current state, then run
-> `git status`/`git diff` to see M5's actual changes before doing
-> anything else. Once M5 is committed and pushed (only when explicitly
-> asked, per §2), continue with M6 (exceptions) — Decision E (HANDOFF.md
-> §6) needs a full design discussion before implementation starts, unlike
-> M5's Decision D which was already fully settled going in.
+> M0 through M5 are already implemented, committed, and pushed to
+> https://github.com/edpl22/py2cpp — read `HANDOFF.md` in the repo root
+> for exact current state. Continue with M6 (exceptions) — Decision E
+> (HANDOFF.md §6) needs a full design discussion before implementation
+> starts, unlike M5's Decision D which was already fully settled going in.
 
 If you don't have the original brief anymore, this document plus a look at
 the actual repo (`git log`, `src/py2cpp/`, `tests/`) should be enough for
