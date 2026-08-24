@@ -1,0 +1,27 @@
+# Development bootstrap for py2cpp.
+#
+# Install everything through this file only:
+#   python -m venv .venv
+#   (activate it)
+#   python -m pip install --upgrade pip
+#   python -m pip install -r requirements.txt
+#
+# Do not `pip install` packages individually; add new dependencies here
+# with a justification in a commit/PR description instead.
+
+-e .
+
+# Test runner (mandated by project testing strategy).
+pytest>=8,<9
+
+# Coverage reporting integrated with pytest.
+pytest-cov>=5,<6
+
+# Linter + formatter in one tool; avoids stacking black/flake8/isort.
+ruff>=0.6,<1
+
+# Static type checking; the project targets `mypy --strict`.
+mypy>=1.11,<2
+
+# Runs the checks above automatically via .pre-commit-config.yaml.
+pre-commit>=3.8,<4
