@@ -25,10 +25,106 @@ def test_accepts_the_add_example() -> None:
     assert not diagnostics.has_errors
 
 
-def test_rejects_class_definitions() -> None:
+def test_rejects_class_without_init() -> None:
     diagnostics = _validate("class Foo:\n    pass\n")
     assert diagnostics.has_errors
     assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_accepts_well_formed_class() -> None:
+    diagnostics = _validate(
+        "class Point:\n"
+        "    def __init__(self, x: int, y: int) -> None:\n"
+        "        self.x: int = x\n"
+        "        self.y: int = y\n"
+        "\n"
+        "    def sum(self) -> int:\n"
+        "        return self.x + self.y\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_accepts_subclass_with_super_init() -> None:
+    diagnostics = _validate(
+        "class Animal:\n"
+        "    def __init__(self, name: str) -> None:\n"
+        "        self.name: str = name\n"
+        "\n"
+        "class Dog(Animal):\n"
+        "    def __init__(self, name: str) -> None:\n"
+        "        super().__init__(name)\n"
+    )
+    assert not diagnostics.has_errors
+
+
+def test_rejects_subclass_missing_super_init() -> None:
+    diagnostics = _validate(
+        "class Animal:\n"
+        "    def __init__(self, name: str) -> None:\n"
+        "        self.name: str = name\n"
+        "\n"
+        "class Dog(Animal):\n"
+        "    def __init__(self, name: str) -> None:\n"
+        "        pass\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_multiple_inheritance() -> None:
+    diagnostics = _validate(
+        "class A:\n"
+        "    def __init__(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "class B:\n"
+        "    def __init__(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "class C(A, B):\n"
+        "    def __init__(self) -> None:\n"
+        "        pass\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_attribute_declared_inside_branch() -> None:
+    diagnostics = _validate(
+        "class Foo:\n"
+        "    def __init__(self, cond: bool) -> None:\n"
+        "        if cond:\n"
+        "            self.x: int = 1\n"
+        "        else:\n"
+        "            self.x: int = 2\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_rejects_self_used_as_a_value() -> None:
+    diagnostics = _validate(
+        "class Foo:\n"
+        "    def __init__(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "    def get(self) -> Foo:\n"
+        "        return self\n"
+    )
+    assert diagnostics.has_errors
+    assert diagnostics.diagnostics[0].code == codes.UNSUPPORTED_SYNTAX
+
+
+def test_accepts_attribute_mutation_from_outside() -> None:
+    diagnostics = _validate(
+        "class Foo:\n"
+        "    def __init__(self, x: int) -> None:\n"
+        "        self.x: int = x\n"
+        "\n"
+        "foo = Foo(1)\n"
+        "foo.x = 2\n"
+    )
+    assert not diagnostics.has_errors
 
 
 def test_accepts_multi_statement_function_body_ending_in_return() -> None:

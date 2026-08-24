@@ -192,6 +192,37 @@ class IRListCompForEach:
     type: Type
 
 
+@dataclass(frozen=True)
+class IRAttributeAccess:
+    """'obj.attr' read. 'obj' is 'this' for a 'self.attr' read inside a
+    method (see backend/emit_cpp.py's IRVarRef handling), or any other
+    class-typed expression otherwise.
+    """
+
+    obj: IRExpr
+    attr: str
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRMethodCall:
+    obj: IRExpr
+    method: str
+    args: tuple[IRExpr, ...]
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRConstruct:
+    """'ClassName(args)' construction -- backed by std::make_shared, per
+    the project's reference-semantics decision for class instances.
+    """
+
+    class_name: str
+    args: tuple[IRExpr, ...]
+    type: Type
+
+
 IRExpr = (
     IRLiteral
     | IRStringLiteral
@@ -211,6 +242,9 @@ IRExpr = (
     | IRTupleIndex
     | IRListCompRange
     | IRListCompForEach
+    | IRAttributeAccess
+    | IRMethodCall
+    | IRConstruct
 )
 
 
@@ -280,7 +314,33 @@ class IRForEach:
     location: SourceLocation
 
 
-IRStmt = IRReturn | IRPrintStmt | IRExprStmt | IRAssign | IRIf | IRWhile | IRFor | IRForEach
+@dataclass(frozen=True)
+class IRAttributeAssign:
+    """'obj.attr = value' -- both a first-time attribute initialization
+    inside a constructor and a later mutation use this same node; unlike
+    IRAssign there's no 'declare' flag, since the C++ struct member is
+    already declared as part of the class's own shape by the time any
+    statement runs.
+    """
+
+    obj: IRExpr
+    attr: str
+    value: IRExpr
+    type: Type
+    location: SourceLocation
+
+
+IRStmt = (
+    IRReturn
+    | IRPrintStmt
+    | IRExprStmt
+    | IRAssign
+    | IRIf
+    | IRWhile
+    | IRFor
+    | IRForEach
+    | IRAttributeAssign
+)
 
 
 @dataclass(frozen=True)
@@ -299,7 +359,44 @@ class IRFunction:
 
 
 @dataclass(frozen=True)
+class IRAttribute:
+    name: str
+    type: Type
+
+
+@dataclass(frozen=True)
+class IRMethod:
+    name: str
+    parameters: tuple[IRParameter, ...]
+    return_type: Type
+    body: tuple[IRStmt, ...]
+    is_virtual: bool
+    is_override: bool
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class IRConstructor:
+    parameters: tuple[IRParameter, ...]
+    base_args: tuple[IRExpr, ...] | None
+    body: tuple[IRStmt, ...]
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
+class IRClassDef:
+    name: str
+    base: str | None
+    attributes: tuple[IRAttribute, ...]
+    constructor: IRConstructor
+    methods: tuple[IRMethod, ...]
+    needs_virtual_destructor: bool
+    location: SourceLocation
+
+
+@dataclass(frozen=True)
 class IRModule:
     name: str
+    classes: tuple[IRClassDef, ...]
     functions: tuple[IRFunction, ...]
     main_body: tuple[IRStmt, ...]

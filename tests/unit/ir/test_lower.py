@@ -15,8 +15,11 @@ from py2cpp.frontend.loader import SourceFile
 from py2cpp.ir.lower import lower_module
 from py2cpp.ir.nodes import (
     IRAssign,
+    IRAttributeAccess,
+    IRAttributeAssign,
     IRBinaryExpr,
     IRCall,
+    IRConstruct,
     IRDictLiteral,
     IRFor,
     IRForEach,
@@ -25,6 +28,7 @@ from py2cpp.ir.nodes import (
     IRListCompForEach,
     IRListCompRange,
     IRListLiteral,
+    IRMethodCall,
     IRModule,
     IRPrintStmt,
     IRReturn,
@@ -38,6 +42,7 @@ from py2cpp.ir.nodes import (
 from py2cpp.semantic.collect import collect_symbols
 from py2cpp.types.model import (
     BoolType,
+    ClassType,
     DictType,
     IntType,
     ListType,
@@ -516,3 +521,156 @@ def test_print_accepts_list_argument() -> None:
     diagnostics, module = _lower("print([1, 2, 3])\n")
     assert not diagnostics.has_errors
     assert module is not None
+
+
+_POINT_SOURCE = (
+    "class Point:\n"
+    "    def __init__(self, x: int, y: int) -> None:\n"
+    "        self.x: int = x\n"
+    "        self.y: int = y\n"
+    "\n"
+    "    def sum(self) -> int:\n"
+    "        return self.x + self.y\n"
+)
+
+
+def test_class_lowers_to_ir_class_def() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE)
+    assert not diagnostics.has_errors
+    assert module is not None
+    point = module.classes[0]
+    assert point.name == "Point"
+    assert point.base is None
+    assert {a.name for a in point.attributes} == {"x", "y"}
+    assert len(point.constructor.body) == 2
+    assert all(isinstance(stmt, IRAttributeAssign) for stmt in point.constructor.body)
+    assert point.methods[0].name == "sum"
+    assert not point.methods[0].is_virtual
+    assert not point.needs_virtual_destructor
+
+
+def test_construction_lowers_to_ir_construct() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE + "\np: Point = Point(1, 2)\nprint(p.sum())\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert isinstance(assign.value, IRConstruct)
+    assert assign.value.class_name == "Point"
+    assert assign.value.type == ClassType("Point")
+
+    print_stmt = module.main_body[1]
+    assert isinstance(print_stmt, IRPrintStmt)
+    assert isinstance(print_stmt.args[0], IRMethodCall)
+    assert print_stmt.args[0].method == "sum"
+
+
+def test_attribute_read_lowers_to_ir_attribute_access() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE + "\np: Point = Point(1, 2)\nprint(p.x)\n")
+    assert not diagnostics.has_errors
+    assert module is not None
+    print_stmt = module.main_body[1]
+    assert isinstance(print_stmt, IRPrintStmt)
+    assert isinstance(print_stmt.args[0], IRAttributeAccess)
+    assert print_stmt.args[0].attr == "x"
+    assert print_stmt.args[0].type == IntType()
+
+
+def test_attribute_mutation_outside_class_lowers() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE + '\np: Point = Point(1, 2)\np.x = 5\n')
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[1]
+    assert isinstance(assign, IRAttributeAssign)
+    assert assign.attr == "x"
+
+
+def test_unknown_attribute_is_rejected() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE + "\np: Point = Point(1, 2)\nprint(p.z)\n")
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.UNDEFINED_NAME
+
+
+def test_construction_arity_mismatch_is_rejected() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE + "\np: Point = Point(1)\n")
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.ARGUMENT_COUNT_MISMATCH
+
+
+_ANIMAL_HIERARCHY_SOURCE = (
+    "class Animal:\n"
+    "    def __init__(self, name: str) -> None:\n"
+    "        self.name: str = name\n"
+    "\n"
+    "    def speak(self) -> str:\n"
+    "        return '...'\n"
+    "\n"
+    "class Dog(Animal):\n"
+    "    def __init__(self, name: str) -> None:\n"
+    "        super().__init__(name)\n"
+    "\n"
+    "    def speak(self) -> str:\n"
+    "        return 'Woof'\n"
+    "\n"
+    "class Cat(Animal):\n"
+    "    def __init__(self, name: str) -> None:\n"
+    "        super().__init__(name)\n"
+)
+
+
+def test_overridden_method_is_marked_virtual_and_override() -> None:
+    diagnostics, module = _lower(_ANIMAL_HIERARCHY_SOURCE)
+    assert not diagnostics.has_errors
+    assert module is not None
+    by_name = {c.name: c for c in module.classes}
+    assert by_name["Animal"].methods[0].is_virtual
+    assert not by_name["Animal"].methods[0].is_override
+    assert by_name["Dog"].methods[0].is_virtual
+    assert by_name["Dog"].methods[0].is_override
+
+
+def test_non_overridden_method_stays_non_virtual() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE)
+    assert not diagnostics.has_errors
+    assert module is not None
+    assert not module.classes[0].methods[0].is_virtual
+
+
+def test_derived_instance_assignable_to_base_typed_variable() -> None:
+    diagnostics, module = _lower(
+        _ANIMAL_HIERARCHY_SOURCE + '\na: Animal = Dog("Rex")\nprint(a.speak())\n'
+    )
+    assert not diagnostics.has_errors
+    assert module is not None
+    assign = module.main_body[0]
+    assert isinstance(assign, IRAssign)
+    assert assign.type == ClassType("Animal")
+    assert isinstance(assign.value, IRConstruct)
+    assert assign.value.type == ClassType("Dog")
+
+
+def test_base_instance_not_assignable_to_derived_typed_variable() -> None:
+    diagnostics, module = _lower(
+        _ANIMAL_HIERARCHY_SOURCE + '\nd: Dog = Animal("Rex")\n'
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_comparing_class_instances_is_rejected() -> None:
+    diagnostics, module = _lower(
+        _POINT_SOURCE + "\na: Point = Point(1, 2)\nb: Point = Point(1, 2)\nprint(a == b)\n"
+    )
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH
+
+
+def test_printing_a_class_instance_is_rejected() -> None:
+    diagnostics, module = _lower(_POINT_SOURCE + "\np: Point = Point(1, 2)\nprint(p)\n")
+    assert diagnostics.has_errors
+    assert module is None
+    assert diagnostics.diagnostics[0].code == codes.TYPE_MISMATCH

@@ -22,9 +22,13 @@ from py2cpp.ir.nodes import (
     BinaryOp,
     CompareOp,
     IRAssign,
+    IRAttributeAccess,
+    IRAttributeAssign,
     IRBinaryExpr,
     IRCall,
+    IRClassDef,
     IRCompare,
+    IRConstruct,
     IRDictLiteral,
     IRExpr,
     IRExprStmt,
@@ -38,6 +42,8 @@ from py2cpp.ir.nodes import (
     IRListLiteral,
     IRLiteral,
     IRLogicalExpr,
+    IRMethod,
+    IRMethodCall,
     IRModule,
     IRNot,
     IRParameter,
@@ -55,6 +61,8 @@ from py2cpp.ir.nodes import (
     LogicalOp,
 )
 from py2cpp.types.model import DictType, ListType, SetType, StringType
+
+_SELF = "self"
 
 _BINARY_OP_HELPER = {
     BinaryOp.ADD: "pyrt::add",
@@ -78,8 +86,25 @@ _LOGICAL_OP_SYMBOL = {
 def emit_module(module: IRModule) -> str:
     writer = CodeWriter()
     writer.write_line("#include <cstdint>")
+    writer.write_line("#include <memory>")
     writer.write_line('#include "pyrt/pyrt.hpp"')
     writer.write_line()
+
+    if module.classes:
+        # Forward-declare every class before any full definition: an
+        # attribute/parameter/return type may reference another class
+        # defined later in the file (or itself, e.g. a linked-structure
+        # 'next' field) -- std::shared_ptr<T> only needs T to be a known
+        # type name, not a complete one, at the point of declaration, so
+        # this alone is enough to make forward and self references work
+        # regardless of the classes' definition order.
+        for class_def in module.classes:
+            writer.write_line(f"struct {escape_identifier(class_def.name)};")
+        writer.write_line()
+
+        for class_def in module.classes:
+            _emit_class(writer, class_def)
+            writer.write_line()
 
     for function in module.functions:
         _emit_function(writer, function)
@@ -93,6 +118,67 @@ def emit_module(module: IRModule) -> str:
     writer.dedent()
     writer.write_line("}")
     return writer.render()
+
+
+def _emit_class(writer: CodeWriter, class_def: IRClassDef) -> None:
+    name = escape_identifier(class_def.name)
+    header = f"struct {name}"
+    if class_def.base is not None:
+        header += f" : {escape_identifier(class_def.base)}"
+    writer.write_line(header + " {")
+    writer.indent()
+
+    for attr in class_def.attributes:
+        # A default member initializer ('{}') keeps every field
+        # value-initialized from the moment the object exists, so there's
+        # no window where a field holds an indeterminate value -- even
+        # though the constructor body (below) unconditionally overwrites
+        # every declared attribute before the object is ever handed out.
+        writer.write_line(f"{cpp_type(attr.type)} {escape_identifier(attr.name)}{{}};")
+    if class_def.attributes:
+        writer.write_line()
+
+    _emit_constructor(writer, class_def)
+    writer.write_line()
+
+    for method in class_def.methods:
+        _emit_method(writer, method)
+        writer.write_line()
+
+    if class_def.needs_virtual_destructor:
+        writer.write_line(f"virtual ~{name}() = default;")
+
+    writer.dedent()
+    writer.write_line("};")
+
+
+def _emit_constructor(writer: CodeWriter, class_def: IRClassDef) -> None:
+    name = escape_identifier(class_def.name)
+    params = ", ".join(_emit_parameter(p) for p in class_def.constructor.parameters)
+    header = f"{name}({params})"
+    if class_def.constructor.base_args is not None:
+        base_args = ", ".join(_emit_expr(a) for a in class_def.constructor.base_args)
+        assert class_def.base is not None
+        header += f" : {escape_identifier(class_def.base)}({base_args})"
+    writer.write_line(header + " {")
+    writer.indent()
+    for stmt in class_def.constructor.body:
+        _emit_stmt(writer, stmt)
+    writer.dedent()
+    writer.write_line("}")
+
+
+def _emit_method(writer: CodeWriter, method: IRMethod) -> None:
+    params = ", ".join(_emit_parameter(p) for p in method.parameters)
+    name = escape_identifier(method.name)
+    prefix = "virtual " if method.is_virtual and not method.is_override else ""
+    suffix = " override" if method.is_override else ""
+    writer.write_line(f"{prefix}{cpp_type(method.return_type)} {name}({params}){suffix} {{")
+    writer.indent()
+    for stmt in method.body:
+        _emit_stmt(writer, stmt)
+    writer.dedent()
+    writer.write_line("}")
 
 
 def _emit_function(writer: CodeWriter, function: IRFunction) -> None:
@@ -125,6 +211,9 @@ def _emit_stmt(writer: CodeWriter, stmt: IRStmt) -> None:
             writer.write_line(f"{cpp_type(stmt.type)} {name} = {value};")
         else:
             writer.write_line(f"{name} = {value};")
+    elif isinstance(stmt, IRAttributeAssign):
+        attr = escape_identifier(stmt.attr)
+        writer.write_line(f"{_emit_expr(stmt.obj)}->{attr} = {_emit_expr(stmt.value)};")
     elif isinstance(stmt, IRIf):
         _emit_if(writer, stmt)
     elif isinstance(stmt, IRWhile):
@@ -233,6 +322,13 @@ def _emit_expr(expr: IRExpr) -> str:
     if isinstance(expr, IRToStr):
         return f"pyrt::str({_emit_expr(expr.operand)})"
     if isinstance(expr, IRVarRef):
+        if expr.name == _SELF:
+            # Methods are real C++ member functions (needed for virtual
+            # dispatch), so there's no 'self' parameter at all in the
+            # emitted signature -- 'self' is always 'this' instead, which
+            # IRAttributeAccess/IRAttributeAssign/IRMethodCall's uniform
+            # 'obj->member' emission handles with no further special-casing.
+            return "this"
         return escape_identifier(expr.name)
     if isinstance(expr, IRBinaryExpr):
         if isinstance(expr.type, StringType):
@@ -278,6 +374,17 @@ def _emit_expr(expr: IRExpr) -> str:
         return _emit_list_comp_range(expr)
     if isinstance(expr, IRListCompForEach):
         return _emit_list_comp_for_each(expr)
+    if isinstance(expr, IRAttributeAccess):
+        attr = escape_identifier(expr.attr)
+        return f"{_emit_expr(expr.obj)}->{attr}"
+    if isinstance(expr, IRMethodCall):
+        method = escape_identifier(expr.method)
+        args = ", ".join(_emit_expr(arg) for arg in expr.args)
+        return f"{_emit_expr(expr.obj)}->{method}({args})"
+    if isinstance(expr, IRConstruct):
+        class_name = escape_identifier(expr.class_name)
+        args = ", ".join(_emit_expr(arg) for arg in expr.args)
+        return f"std::make_shared<{class_name}>({args})"
     raise TypeError(f"unhandled IR expression: {expr!r}")  # pragma: no cover
 
 

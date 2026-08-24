@@ -65,3 +65,17 @@ class TupleType(Type):
 
     def __str__(self) -> str:
         return f"tuple[{', '.join(str(t) for t in self.element_types)}]"
+
+
+@dataclass(frozen=True)
+class ClassType(Type):
+    """A user-defined class. Equality/hashing is by name alone (two
+    ClassType instances naming the same class are the same type), matching
+    every other Type here -- the class's actual shape (attributes,
+    methods, base) lives in the symbol table, not in this marker.
+    """
+
+    name: str
+
+    def __str__(self) -> str:
+        return self.name

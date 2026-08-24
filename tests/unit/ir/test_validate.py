@@ -20,7 +20,7 @@ def test_valid_module_passes() -> None:
         body=(IRReturn(value=IRVarRef(name="a", type=IntType()), location=_LOCATION),),
         location=_LOCATION,
     )
-    module = IRModule(name="m", functions=(function,), main_body=())
+    module = IRModule(classes=(), name="m", functions=(function,), main_body=())
     validate_module(module)  # must not raise
 
 
@@ -38,7 +38,7 @@ def test_return_type_mismatch_raises_internal_error() -> None:
         body=(IRReturn(value=IRVarRef(name="a", type=_BogusType()), location=_LOCATION),),
         location=_LOCATION,
     )
-    module = IRModule(name="m", functions=(function,), main_body=())
+    module = IRModule(classes=(), name="m", functions=(function,), main_body=())
 
     with pytest.raises(InternalCompilerError):
         validate_module(module)
@@ -46,6 +46,7 @@ def test_return_type_mismatch_raises_internal_error() -> None:
 
 def test_print_with_string_argument_passes() -> None:
     module = IRModule(
+        classes=(),
         name="m",
         functions=(),
         main_body=(
@@ -57,6 +58,7 @@ def test_print_with_string_argument_passes() -> None:
 
 def test_for_each_body_is_validated() -> None:
     module = IRModule(
+        classes=(),
         name="m",
         functions=(),
         main_body=(
@@ -82,7 +84,7 @@ def test_duplicate_function_name_raises_internal_error() -> None:
         body=(IRReturn(value=IRVarRef(name="a", type=IntType()), location=_LOCATION),),
         location=_LOCATION,
     )
-    module = IRModule(name="m", functions=(function, function), main_body=())
+    module = IRModule(classes=(), name="m", functions=(function, function), main_body=())
 
     with pytest.raises(InternalCompilerError):
         validate_module(module)

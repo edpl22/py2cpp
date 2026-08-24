@@ -38,9 +38,15 @@ from py2cpp.ir.nodes import (
     BinaryOp,
     CompareOp,
     IRAssign,
+    IRAttribute,
+    IRAttributeAccess,
+    IRAttributeAssign,
     IRBinaryExpr,
     IRCall,
+    IRClassDef,
     IRCompare,
+    IRConstruct,
+    IRConstructor,
     IRDictLiteral,
     IRExpr,
     IRExprStmt,
@@ -54,6 +60,8 @@ from py2cpp.ir.nodes import (
     IRListLiteral,
     IRLiteral,
     IRLogicalExpr,
+    IRMethod,
+    IRMethodCall,
     IRModule,
     IRNot,
     IRParameter,
@@ -71,10 +79,18 @@ from py2cpp.ir.nodes import (
     LogicalOp,
 )
 from py2cpp.semantic.annotations import resolve_annotation
-from py2cpp.semantic.symbols import FunctionSymbol, SymbolTable
+from py2cpp.semantic.symbols import (
+    AttributeSymbol,
+    ClassSymbol,
+    FunctionSymbol,
+    MethodSymbol,
+    ParameterSymbol,
+    SymbolTable,
+)
 from py2cpp.types.join import is_assignable, join
 from py2cpp.types.model import (
     BoolType,
+    ClassType,
     DictType,
     IntType,
     ListType,
@@ -99,6 +115,7 @@ _COMPARE_OP_MAP: dict[type[ast.cmpop], CompareOp] = {
 }
 
 _PRINT_BUILTIN = "print"
+_SELF = "self"
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
@@ -109,6 +126,9 @@ def lower_module(
     source: SourceFile,
     diagnostics: DiagnosticEngine,
 ) -> IRModule | None:
+    virtual_methods, override_methods = _compute_virtual_methods(symtab)
+
+    classes: list[IRClassDef] = []
     functions: list[IRFunction] = []
     top_level_stmts: list[ast.stmt] = []
 
@@ -123,6 +143,21 @@ def lower_module(
             function = _lower_function(stmt, symbol, symtab, source, diagnostics)
             if function is not None:
                 functions.append(function)
+        elif isinstance(stmt, ast.ClassDef):
+            class_symbol = symtab.classes.get(stmt.name)
+            if class_symbol is None or class_symbol.location != _location(source, stmt):
+                continue
+            class_def = _lower_class(
+                stmt,
+                class_symbol,
+                symtab,
+                source,
+                diagnostics,
+                virtual_methods=virtual_methods,
+                override_methods=override_methods,
+            )
+            if class_def is not None:
+                classes.append(class_def)
         else:
             top_level_stmts.append(stmt)
 
@@ -132,7 +167,113 @@ def lower_module(
 
     if diagnostics.has_errors or main_body is None:
         return None
-    return IRModule(name=source.path.stem, functions=tuple(functions), main_body=tuple(main_body))
+    return IRModule(
+        name=source.path.stem,
+        classes=tuple(classes),
+        functions=tuple(functions),
+        main_body=tuple(main_body),
+    )
+
+
+def _compute_virtual_methods(
+    symtab: SymbolTable,
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """Decision D: a method is virtual iff it's actually overridden
+    somewhere in the whole compiled program (closed-world, computed --
+    never user-declared). For each class's own method, walk up its base
+    chain for the nearest ancestor that also directly defines the same
+    name; if found, both ends of that pair are virtual, and the subclass's
+    definition is an override. Chains longer than one link fall out for
+    free, since each adjacent pair in the chain gets marked this way.
+    """
+
+    virtual: set[tuple[str, str]] = set()
+    override: set[tuple[str, str]] = set()
+    for name, symbol in symtab.classes.items():
+        for method_name in symbol.methods:
+            current = symbol.base
+            while current is not None:
+                ancestor = symtab.classes[current]
+                if method_name in ancestor.methods:
+                    virtual.add((current, method_name))
+                    virtual.add((name, method_name))
+                    override.add((name, method_name))
+                    break
+                current = ancestor.base
+    return virtual, override
+
+
+def _is_subclass(name: str, ancestor: str, symtab: SymbolTable) -> bool:
+    current: str | None = name
+    while current is not None:
+        if current == ancestor:
+            return True
+        current = symtab.classes[current].base
+    return False
+
+
+def _assignable(value_type: Type, target_type: Type, symtab: SymbolTable) -> bool:
+    """Like types.join.is_assignable, extended with class-hierarchy
+    awareness: a derived-class value may be assigned/passed where its base
+    class is expected (the polymorphism this milestone commits to). The
+    pure types/ layer stays hierarchy-agnostic; this is the one place that
+    composes primitive coercion rules with class subtyping, matching this
+    module's own role as "combined name-resolution + type-check + IR
+    build".
+    """
+
+    if is_assignable(value_type, target_type):
+        return True
+    if isinstance(value_type, ClassType) and isinstance(target_type, ClassType):
+        return _is_subclass(value_type.name, target_type.name, symtab)
+    return False
+
+
+def _resolve_attribute(class_name: str, attr: str, symtab: SymbolTable) -> AttributeSymbol | None:
+    current: str | None = class_name
+    while current is not None:
+        class_symbol = symtab.classes[current]
+        if attr in class_symbol.attributes:
+            return class_symbol.attributes[attr]
+        current = class_symbol.base
+    return None
+
+
+def _resolve_method(class_name: str, method: str, symtab: SymbolTable) -> MethodSymbol | None:
+    current: str | None = class_name
+    while current is not None:
+        class_symbol = symtab.classes[current]
+        if method in class_symbol.methods:
+            return class_symbol.methods[method]
+        current = class_symbol.base
+    return None
+
+
+def _typecheck_arguments(
+    args: list[IRExpr],
+    parameters: tuple[ParameterSymbol, ...],
+    owner_name: str,
+    symtab: SymbolTable,
+    diagnostics: DiagnosticEngine,
+    location: SourceLocation,
+) -> bool:
+    if len(args) != len(parameters):
+        diagnostics.error(
+            codes.ARGUMENT_COUNT_MISMATCH,
+            f"'{owner_name}' takes {len(parameters)} argument(s) but {len(args)} were given",
+            location,
+        )
+        return False
+    for arg, parameter in zip(args, parameters, strict=True):
+        if not _assignable(arg.type, parameter.type, symtab):
+            diagnostics.error(
+                codes.TYPE_MISMATCH,
+                f"argument '{parameter.name}' of '{owner_name}' expects '{parameter.type}', "
+                f"got '{arg.type}'",
+                location,
+            )
+            return False
+    return True
 
 
 def _location(source: SourceFile, node: ast.AST) -> SourceLocation:
@@ -167,7 +308,7 @@ def _lower_function(
     )
     if value is None:
         return None
-    if not is_assignable(value.type, symbol.return_type):
+    if not _assignable(value.type, symbol.return_type, symtab):
         diagnostics.error(
             codes.TYPE_MISMATCH,
             f"function '{symbol.name}' is declared to return '{symbol.return_type}' "
@@ -186,6 +327,166 @@ def _lower_function(
     )
 
 
+def _lower_class(
+    node: ast.ClassDef,
+    class_symbol: ClassSymbol,
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    virtual_methods: set[tuple[str, str]],
+    override_methods: set[tuple[str, str]],
+) -> IRClassDef | None:
+    init_node = next(
+        stmt
+        for stmt in node.body
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__"
+    )
+    constructor = _lower_constructor(init_node, class_symbol, symtab, source, diagnostics)
+
+    ok = constructor is not None
+    methods: list[IRMethod] = []
+    for stmt in node.body:
+        if not isinstance(stmt, ast.FunctionDef) or stmt.name == "__init__":
+            continue
+        method_symbol = class_symbol.methods.get(stmt.name)
+        if method_symbol is None or method_symbol.location != _location(source, stmt):
+            continue
+        method = _lower_method(
+            stmt,
+            class_symbol,
+            method_symbol,
+            is_virtual=(class_symbol.name, stmt.name) in virtual_methods,
+            is_override=(class_symbol.name, stmt.name) in override_methods,
+            symtab=symtab,
+            source=source,
+            diagnostics=diagnostics,
+        )
+        if method is None:
+            ok = False
+            continue
+        methods.append(method)
+
+    if not ok or constructor is None:
+        return None
+
+    is_base_of_something = any(s.base == class_symbol.name for s in symtab.classes.values())
+    ir_attributes = tuple(
+        IRAttribute(name=attr.name, type=attr.type) for attr in class_symbol.attributes.values()
+    )
+    return IRClassDef(
+        name=class_symbol.name,
+        base=class_symbol.base,
+        attributes=ir_attributes,
+        constructor=constructor,
+        methods=tuple(methods),
+        needs_virtual_destructor=is_base_of_something or class_symbol.base is not None,
+        location=class_symbol.location,
+    )
+
+
+def _lower_constructor(
+    init_node: ast.FunctionDef,
+    class_symbol: ClassSymbol,
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+) -> IRConstructor | None:
+    location = _location(source, init_node)
+    scope: dict[str, Type] = {_SELF: ClassType(class_symbol.name)}
+    for p in class_symbol.init_parameters:
+        scope[p.name] = p.type
+
+    body = init_node.body
+    base_args: tuple[IRExpr, ...] | None = None
+    start = 0
+    if class_symbol.base is not None:
+        first = body[0]
+        assert isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)
+        super_call = first.value
+        args = _lower_call_arguments(
+            super_call.args, scope, symtab, source, diagnostics, enforce_definition_order=False
+        )
+        if args is None:
+            return None
+        base_symbol = symtab.classes[class_symbol.base]
+        if not _typecheck_arguments(
+            args,
+            base_symbol.init_parameters,
+            f"{class_symbol.base}.__init__",
+            symtab,
+            diagnostics,
+            _location(source, super_call),
+        ):
+            return None
+        base_args = tuple(args)
+        start = 1
+
+    ir_body = _lower_block(
+        body[start:], scope, symtab, source, diagnostics, enforce_definition_order=False
+    )
+    if ir_body is None:
+        return None
+
+    ir_parameters = tuple(
+        IRParameter(name=p.name, type=p.type) for p in class_symbol.init_parameters
+    )
+    return IRConstructor(
+        parameters=ir_parameters, base_args=base_args, body=tuple(ir_body), location=location
+    )
+
+
+def _lower_method(
+    node: ast.FunctionDef,
+    class_symbol: ClassSymbol,
+    method_symbol: MethodSymbol,
+    *,
+    is_virtual: bool,
+    is_override: bool,
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+) -> IRMethod | None:
+    scope: dict[str, Type] = {_SELF: ClassType(class_symbol.name)}
+    for p in method_symbol.parameters:
+        scope[p.name] = p.type
+
+    return_stmt = node.body[-1]
+    assert isinstance(return_stmt, ast.Return)
+    assert return_stmt.value is not None
+
+    leading = _lower_block(
+        node.body[:-1], scope, symtab, source, diagnostics, enforce_definition_order=False
+    )
+    if leading is None:
+        return None
+
+    value = _lower_expr(
+        return_stmt.value, scope, symtab, source, diagnostics, enforce_definition_order=False
+    )
+    if value is None:
+        return None
+    if not _assignable(value.type, method_symbol.return_type, symtab):
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            f"method '{class_symbol.name}.{method_symbol.name}' is declared to return "
+            f"'{method_symbol.return_type}' but returns '{value.type}'",
+            _location(source, return_stmt),
+        )
+        return None
+
+    ir_parameters = tuple(IRParameter(name=p.name, type=p.type) for p in method_symbol.parameters)
+    return IRMethod(
+        name=method_symbol.name,
+        parameters=ir_parameters,
+        return_type=method_symbol.return_type,
+        body=(*leading, IRReturn(value=value, location=_location(source, return_stmt))),
+        is_virtual=is_virtual,
+        is_override=is_override,
+        location=method_symbol.location,
+    )
+
+
 def _lower_block(
     stmts: list[ast.stmt],
     scope: dict[str, Type],
@@ -198,6 +499,8 @@ def _lower_block(
     result: list[IRStmt] = []
     ok = True
     for stmt in stmts:
+        if isinstance(stmt, ast.Pass):
+            continue
         lowered = _lower_stmt(
             stmt,
             scope,
@@ -226,6 +529,17 @@ def _lower_stmt(
 
     if isinstance(stmt, ast.Assign):
         target = stmt.targets[0]
+        if isinstance(target, ast.Attribute):
+            return _lower_attribute_assign(
+                target,
+                stmt.value,
+                scope,
+                symtab,
+                source,
+                diagnostics,
+                location,
+                enforce_definition_order=enforce_definition_order,
+            )
         assert isinstance(target, ast.Name)
         value = _lower_expr(
             stmt.value,
@@ -237,14 +551,36 @@ def _lower_stmt(
         )
         if value is None:
             return None
-        return _finish_assign(target.id, value, None, scope, diagnostics, location)
+        return _finish_assign(target.id, value, None, scope, symtab, diagnostics, location)
 
     if isinstance(stmt, ast.AnnAssign):
         target = stmt.target
-        assert isinstance(target, ast.Name)
         assert stmt.value is not None
+        if isinstance(target, ast.Attribute):
+            # Subset validation guarantees this is 'self.<attr>: T = value'
+            # as a direct top-level statement of '__init__' -- the
+            # attribute already exists in the symbol table by this point
+            # (collect.py built it from this exact AnnAssign), so there's
+            # nothing left to re-resolve here beyond the usual assignment
+            # type check that _lower_attribute_assign already does.
+            return _lower_attribute_assign(
+                target,
+                stmt.value,
+                scope,
+                symtab,
+                source,
+                diagnostics,
+                location,
+                enforce_definition_order=enforce_definition_order,
+            )
+        assert isinstance(target, ast.Name)
         annotated_type = resolve_annotation(
-            stmt.annotation, location, source, diagnostics, what=f"variable '{target.id}'"
+            stmt.annotation,
+            location,
+            source,
+            diagnostics,
+            what=f"variable '{target.id}'",
+            known_classes=frozenset(symtab.classes),
         )
         value = _lower_expr(
             stmt.value,
@@ -256,7 +592,9 @@ def _lower_stmt(
         )
         if annotated_type is None or value is None:
             return None
-        return _finish_assign(target.id, value, annotated_type, scope, diagnostics, location)
+        return _finish_assign(
+            target.id, value, annotated_type, scope, symtab, diagnostics, location
+        )
 
     if isinstance(stmt, ast.If):
         return _lower_if(
@@ -290,8 +628,7 @@ def _lower_stmt(
 
     if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
         call_node = stmt.value
-        assert isinstance(call_node.func, ast.Name)
-        if call_node.func.id == _PRINT_BUILTIN:
+        if isinstance(call_node.func, ast.Name) and call_node.func.id == _PRINT_BUILTIN:
             return _lower_print(
                 call_node,
                 scope,
@@ -317,11 +654,100 @@ def _lower_stmt(
     )  # pragma: no cover
 
 
+def _lower_attribute_target(
+    target: ast.Attribute,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> tuple[IRExpr, Type] | None:
+    """Lowers the object expression of an 'obj.attr' target (assignment or
+    read) and resolves 'attr''s declared type, walking obj's class up its
+    base chain. Shared by attribute reads (_lower_expr) and attribute
+    assignment (_lower_attribute_assign), since both need exactly this.
+    """
+
+    obj = _lower_expr(
+        target.value,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if obj is None:
+        return None
+    if not isinstance(obj.type, ClassType):
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            f"'{obj.type}' has no attributes (it is not a class instance)",
+            _location(source, target),
+        )
+        return None
+    attr_symbol = _resolve_attribute(obj.type.name, target.attr, symtab)
+    if attr_symbol is None:
+        diagnostics.error(
+            codes.UNDEFINED_NAME,
+            f"'{obj.type.name}' has no attribute '{target.attr}'",
+            _location(source, target),
+        )
+        return None
+    return obj, attr_symbol.type
+
+
+def _lower_attribute_assign(
+    target: ast.Attribute,
+    value_node: ast.expr,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    location: SourceLocation,
+    *,
+    enforce_definition_order: bool,
+) -> IRAttributeAssign | None:
+    resolved = _lower_attribute_target(
+        target,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if resolved is None:
+        return None
+    obj, attr_type = resolved
+    value = _lower_expr(
+        value_node,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if value is None:
+        return None
+    if not _assignable(value.type, attr_type, symtab):
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            f"cannot assign '{value.type}' to attribute '{target.attr}' of declared type "
+            f"'{attr_type}'",
+            location,
+        )
+        return None
+    return IRAttributeAssign(
+        obj=obj, attr=target.attr, value=value, type=attr_type, location=location
+    )
+
+
 def _finish_assign(
     name: str,
     value: IRExpr,
     annotated_type: Type | None,
     scope: dict[str, Type],
+    symtab: SymbolTable,
     diagnostics: DiagnosticEngine,
     location: SourceLocation,
 ) -> IRAssign | None:
@@ -329,7 +755,7 @@ def _finish_assign(
 
     if existing is None:
         target_type = annotated_type if annotated_type is not None else value.type
-        if not is_assignable(value.type, target_type):
+        if not _assignable(value.type, target_type, symtab):
             diagnostics.error(
                 codes.TYPE_MISMATCH,
                 f"cannot assign '{value.type}' to '{name}' of declared type '{target_type}'",
@@ -347,7 +773,7 @@ def _finish_assign(
             location,
         )
         return None
-    if not is_assignable(value.type, existing):
+    if not _assignable(value.type, existing, symtab):
         diagnostics.error(
             codes.TYPE_MISMATCH,
             f"cannot assign '{value.type}' to '{name}', which already has type '{existing}'",
@@ -708,6 +1134,16 @@ def _lower_call(
     *,
     enforce_definition_order: bool,
 ) -> IRExpr | None:
+    if isinstance(node.func, ast.Attribute):
+        return _lower_method_call(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
     assert isinstance(node.func, ast.Name)
     callee_name = node.func.id
     location = _location(source, node)
@@ -721,10 +1157,23 @@ def _lower_call(
         )
         return None
 
+    if callee_name in symtab.classes:
+        return _lower_construct(
+            node,
+            callee_name,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+
     symbol = symtab.functions.get(callee_name)
     if symbol is None:
         diagnostics.error(
-            codes.UNKNOWN_CALL_TARGET, f"call to unknown function '{callee_name}'", location
+            codes.UNKNOWN_CALL_TARGET,
+            f"call to unknown function or class '{callee_name}'",
+            location,
         )
         return None
 
@@ -748,25 +1197,115 @@ def _lower_call(
     if args is None:
         return None
 
-    if len(args) != symbol.arity:
+    if not _typecheck_arguments(
+        args, symbol.parameters, callee_name, symtab, diagnostics, location
+    ):
+        return None
+
+    return IRCall(callee=callee_name, args=tuple(args), type=symbol.return_type)
+
+
+def _lower_construct(
+    node: ast.Call,
+    class_name: str,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    location = _location(source, node)
+    class_symbol = symtab.classes[class_name]
+
+    if enforce_definition_order and not class_symbol.location.line < location.line:
         diagnostics.error(
-            codes.ARGUMENT_COUNT_MISMATCH,
-            f"'{callee_name}' takes {symbol.arity} argument(s) but {len(args)} were given",
+            codes.UNDEFINED_NAME,
+            f"class '{class_name}' is used here before it is defined",
+            location,
+            help_text=f"'{class_name}' is defined at {class_symbol.location}",
+        )
+        return None
+
+    args = _lower_call_arguments(
+        node.args,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if args is None:
+        return None
+
+    if not _typecheck_arguments(
+        args, class_symbol.init_parameters, f"{class_name}(...)", symtab, diagnostics, location
+    ):
+        return None
+
+    return IRConstruct(class_name=class_name, args=tuple(args), type=ClassType(class_name))
+
+
+def _lower_method_call(
+    node: ast.Call,
+    scope: dict[str, Type],
+    symtab: SymbolTable,
+    source: SourceFile,
+    diagnostics: DiagnosticEngine,
+    *,
+    enforce_definition_order: bool,
+) -> IRExpr | None:
+    assert isinstance(node.func, ast.Attribute)
+    location = _location(source, node)
+
+    obj = _lower_expr(
+        node.func.value,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if obj is None:
+        return None
+    if not isinstance(obj.type, ClassType):
+        diagnostics.error(
+            codes.TYPE_MISMATCH,
+            f"'{obj.type}' has no methods (it is not a class instance)",
             location,
         )
         return None
 
-    for arg, parameter in zip(args, symbol.parameters, strict=True):
-        if not is_assignable(arg.type, parameter.type):
-            diagnostics.error(
-                codes.TYPE_MISMATCH,
-                f"argument '{parameter.name}' of '{callee_name}' expects '{parameter.type}', "
-                f"got '{arg.type}'",
-                location,
-            )
-            return None
+    method_name = node.func.attr
+    method_symbol = _resolve_method(obj.type.name, method_name, symtab)
+    if method_symbol is None:
+        diagnostics.error(
+            codes.UNDEFINED_NAME,
+            f"'{obj.type.name}' has no method '{method_name}'",
+            location,
+        )
+        return None
 
-    return IRCall(callee=callee_name, args=tuple(args), type=symbol.return_type)
+    args = _lower_call_arguments(
+        node.args,
+        scope,
+        symtab,
+        source,
+        diagnostics,
+        enforce_definition_order=enforce_definition_order,
+    )
+    if args is None:
+        return None
+
+    owner_name = f"{obj.type.name}.{method_name}"
+    if not _typecheck_arguments(
+        args, method_symbol.parameters, owner_name, symtab, diagnostics, location
+    ):
+        return None
+
+    return IRMethodCall(
+        obj=obj, method=method_name, args=tuple(args), type=method_symbol.return_type
+    )
 
 
 def _lower_fstring(
@@ -1286,6 +1825,20 @@ def _lower_expr(
             return None
         return IRVarRef(name=node.id, type=declared)
 
+    if isinstance(node, ast.Attribute):
+        resolved = _lower_attribute_target(
+            node,
+            scope,
+            symtab,
+            source,
+            diagnostics,
+            enforce_definition_order=enforce_definition_order,
+        )
+        if resolved is None:
+            return None
+        obj, attr_type = resolved
+        return IRAttributeAccess(obj=obj, attr=node.attr, type=attr_type)
+
     if isinstance(node, ast.BinOp):
         op = _BINOP_MAP[type(node.op)]
         left = _lower_expr(
@@ -1347,6 +1900,19 @@ def _lower_expr(
             enforce_definition_order=enforce_definition_order,
         )
         if left is None or right is None:
+            return None
+        # Comparing class instances needs '__eq__'/'__lt__'-style dunder
+        # support, which this milestone doesn't have; join() would let two
+        # same-named ClassTypes through by plain equality (they're a valid
+        # 'type', just not a supported comparison), so that's rejected
+        # explicitly rather than silently falling through to it.
+        if isinstance(left.type, ClassType) or isinstance(right.type, ClassType):
+            diagnostics.error(
+                codes.TYPE_MISMATCH,
+                "comparing class instances is not supported in this milestone",
+                _location(source, node),
+                help_text="operator-overload dunders like '__eq__' arrive in a later milestone",
+            )
             return None
         if join(left.type, right.type) is None:
             diagnostics.error(

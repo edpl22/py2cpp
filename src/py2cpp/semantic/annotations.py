@@ -14,6 +14,7 @@ from py2cpp.diagnostics import DiagnosticEngine, SourceLocation
 from py2cpp.frontend.loader import SourceFile
 from py2cpp.types.model import (
     BoolType,
+    ClassType,
     DictType,
     IntType,
     ListType,
@@ -38,6 +39,7 @@ def resolve_annotation(
     diagnostics: DiagnosticEngine,
     *,
     what: str,
+    known_classes: frozenset[str],
 ) -> Type | None:
     if node is None:
         diagnostics.error(
@@ -58,12 +60,17 @@ def resolve_annotation(
     if isinstance(node, ast.Name) and node.id in _SUPPORTED_ANNOTATIONS:
         return _SUPPORTED_ANNOTATIONS[node.id]
 
+    if isinstance(node, ast.Name) and node.id in known_classes:
+        return ClassType(node.id)
+
     if (
         isinstance(node, ast.Subscript)
         and isinstance(node.value, ast.Name)
         and node.value.id in _CONTAINER_ANNOTATIONS
     ):
-        return _resolve_container_annotation(node, location, source, diagnostics, what=what)
+        return _resolve_container_annotation(
+            node, location, source, diagnostics, what=what, known_classes=known_classes
+        )
 
     diagnostics.error(
         codes.MISSING_ANNOTATION,
@@ -71,7 +78,7 @@ def resolve_annotation(
         location,
         help_text=(
             "supported types in this milestone: int, bool, str, "
-            "list[T], dict[K, V], set[T], tuple[T, ...]"
+            "list[T], dict[K, V], set[T], tuple[T, ...], or a class name"
         ),
     )
     return None
@@ -84,19 +91,30 @@ def _resolve_container_annotation(
     diagnostics: DiagnosticEngine,
     *,
     what: str,
+    known_classes: frozenset[str],
 ) -> Type | None:
     assert isinstance(node.value, ast.Name)
     container = node.value.id
 
     if container == "list":
         element = resolve_annotation(
-            node.slice, location, source, diagnostics, what=f"{what}'s element type"
+            node.slice,
+            location,
+            source,
+            diagnostics,
+            what=f"{what}'s element type",
+            known_classes=known_classes,
         )
         return ListType(element) if element is not None else None
 
     if container == "set":
         element = resolve_annotation(
-            node.slice, location, source, diagnostics, what=f"{what}'s element type"
+            node.slice,
+            location,
+            source,
+            diagnostics,
+            what=f"{what}'s element type",
+            known_classes=known_classes,
         )
         return SetType(element) if element is not None else None
 
@@ -109,10 +127,20 @@ def _resolve_container_annotation(
             )
             return None
         key = resolve_annotation(
-            node.slice.elts[0], location, source, diagnostics, what=f"{what}'s key type"
+            node.slice.elts[0],
+            location,
+            source,
+            diagnostics,
+            what=f"{what}'s key type",
+            known_classes=known_classes,
         )
         value = resolve_annotation(
-            node.slice.elts[1], location, source, diagnostics, what=f"{what}'s value type"
+            node.slice.elts[1],
+            location,
+            source,
+            diagnostics,
+            what=f"{what}'s value type",
+            known_classes=known_classes,
         )
         return DictType(key, value) if key is not None and value is not None else None
 
@@ -121,7 +149,12 @@ def _resolve_container_annotation(
     element_types: list[Type] = []
     for element_node in element_nodes:
         element = resolve_annotation(
-            element_node, location, source, diagnostics, what=f"{what}'s element type"
+            element_node,
+            location,
+            source,
+            diagnostics,
+            what=f"{what}'s element type",
+            known_classes=known_classes,
         )
         if element is None:
             return None
