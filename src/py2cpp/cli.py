@@ -1,10 +1,4 @@
-"""Command-line interface for py2cpp.
-
-The full flag surface documented in the project's CLI contract is declared
-here now so the interface is stable for scripts and CI from day one. Only
-``--version`` is functionally implemented in this milestone; the compiler
-pipeline (frontend through backend) lands starting in M1.
-"""
+"""Command-line interface for py2cpp."""
 
 from __future__ import annotations
 
@@ -14,6 +8,9 @@ import sys
 from pathlib import Path
 
 from py2cpp import __version__
+from py2cpp.compiler import CompilerOptions, compile_source
+from py2cpp.frontend.loader import SourceLoadError
+from py2cpp.ir.validate import InternalCompilerError
 
 _LOG = logging.getLogger("py2cpp")
 
@@ -78,8 +75,33 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help(sys.stderr)
         return 2
 
-    _LOG.error(
-        "py2cpp does not yet support transpilation (the compiler pipeline "
-        "lands in milestone M1); only --version is currently implemented."
+    options = CompilerOptions(
+        source=args.source,
+        output=args.output,
+        std=args.std,
+        emit_runtime=args.emit_runtime,
+        check_only=args.check,
     )
-    return 1
+
+    try:
+        result = compile_source(options)
+    except SourceLoadError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except InternalCompilerError as exc:
+        print(
+            f"internal compiler error: {exc}\nthis is a bug in py2cpp; please report it.",
+            file=sys.stderr,
+        )
+        return 1
+
+    for diagnostic in result.diagnostics:
+        print(diagnostic.format(), file=sys.stderr)
+
+    if not result.success:
+        return 1
+
+    if not options.check_only and result.cpp_path is not None:
+        _LOG.info("wrote %s", result.cpp_path)
+
+    return 0
