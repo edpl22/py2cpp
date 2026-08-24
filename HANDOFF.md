@@ -138,7 +138,9 @@ py2cpp/
 │   └── support/                      # toolchain.py (compiler discovery via shutil.which), pipeline.py (CPython/py2cpp runners)
 ├── pyproject.toml                    # hatchling, ruff/mypy/pytest/coverage config
 ├── requirements.txt                  # -e ., pytest, pytest-cov, ruff, mypy, pre-commit — nothing else
-└── README.md
+├── USAGE.md                          # install + CLI-only reference, no project background (M7 follow-up)
+├── README.md
+└── README.pt-BR.md                   # Portuguese-Brazil translation of README.md only (M7 follow-up); other docs stay English, linked as "(em inglês)"
 ```
 
 ---
@@ -154,21 +156,26 @@ py2cpp/
 | **M4** | ✅ done, committed, pushed | `list`/`dict`/`set`/`tuple` literals, indexing (negative-index for list/tuple), `for x in <container>`, list comprehensions (range- and container-sourced, one optional `if`) |
 | **M5** | ✅ done, committed, pushed | Classes, `__init__`, single inheritance, closed-world virtual dispatch (Decision D, §6, now implemented) and polymorphic assignment |
 | **M6** | ✅ done, committed, pushed | Exceptions: `try`/`except`/`raise`, a curated `pyrt` exception hierarchy (Decision E, §6, now implemented), floor division (`//`) |
-| **M7** | 🔶 implemented locally, not yet committed | v0.1.0 polish: `docs/architecture.md`, `docs/adding-python-feature.md`, full example set, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI validation, PyPI Trusted Publishing release workflow |
+| **M7** | ✅ done, committed, pushed (`a26fbd9`) | v0.1.0 polish: `docs/architecture.md`, `docs/adding-python-feature.md`, `USAGE.md`, `README.pt-BR.md`, full example set, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI validation, PyPI Trusted Publishing release workflow |
 
 CI has been green through M2 on all 12 matrix jobs (ubuntu/macos/windows ×
 py3.10–3.13); M3/M4/M5/M6 pass the full local acceptance suite (`ruff`,
 `mypy --strict`, `pytest`, g++ compilation of every golden case) but
 haven't had a CI run confirmed since pushing — check GitHub Actions status
 before assuming green, per §2's "never claim a check passed without
-running it." M7's CI changes (§4 below) are in the same boat, plus two
-things that are genuinely **NOT RUN** and can't be verified from this
-environment: whether `clang++`/`cl` actually get installed and exercised
-the way `ci.yml` now expects on GitHub's hosted runners, and whether
-`.github/workflows/release.yml`'s `build`/`publish` jobs actually succeed
-(`build`/`twine` aren't installed locally — they're CI-only tooling, not
-added to `requirements.txt`, since nothing in local dev needs them). Both
-need a real CI run to confirm.
+running it." **M7 is the exception**: its CI/release changes actually
+were confirmed with a real run — after pushing `a26fbd9`, both workflows
+were watched to completion (`gh run watch ... --exit-status`) rather than
+assumed. `ci.yml` run `32759687148`: all 12 matrix jobs green, and the new
+`clang` install (Linux) / `ilammy/msvc-dev-cmd` setup (Windows) steps
+worked, so the golden tests' `g++`/`clang++`/`cl` parametrization actually
+exercised all three instead of skipping two of them on non-Linux jobs.
+`release.yml` run `32759687152`: the `build` job (sdist + wheel +
+`twine check`) passed; the `publish` job correctly stayed skipped, since
+it's gated on a GitHub Release being published and this was a plain push.
+**Still genuinely NOT RUN / needs external action**: PyPI Trusted
+Publishing itself has never fired, because it needs a one-time step only
+a human with PyPI account access can do — see §6's M7 scope-calls entry.
 
 M7 added four new example programs (`examples/strings.py`,
 `containers.py`, `classes.py`, `exceptions.py`) alongside the existing
@@ -196,7 +203,26 @@ iteration order for that dataset — that's a coincidence of the existing
 fixture, not a guarantee; don't read it as evidence the ordering divergence
 isn't real.
 
-**Latest commits** (newest first): `08f87ea` (M6: exceptions,
+A follow-up commit after `a26fbd9` added two more documents, requested
+directly rather than as part of the original M7 scope: `USAGE.md` (a
+standalone install/CLI-only reference, deliberately kept separate from
+`README.md` rather than replacing it, since `pyproject.toml`'s
+`readme = "README.md"` field is also what PyPI shows as the project
+description — a request for "usage-only instructions" isn't the same
+request as "replace the project's PyPI-facing description") and
+`README.pt-BR.md` (a Portuguese-Brazil translation of `README.md`, cross-
+linked from the top of both files). **Scope note**: only `README.md` was
+translated — `USAGE.md`, `docs/architecture.md`,
+`docs/adding-python-feature.md`, and `CODE_OF_CONDUCT.md` are still
+English-only, and `README.pt-BR.md`'s links to them say "(em inglês)"
+rather than silently pointing a Portuguese reader at an English page with
+no warning. If more translations are wanted later, keep that same
+"linked page is English, and says so" pattern rather than either silently
+mixing languages or half-translating a doc.
+
+**Latest commits** (newest first): `a26fbd9` (M7: architecture docs,
+examples, issue templates, CHANGELOG, CODE_OF_CONDUCT, cross-compiler CI,
+PyPI Trusted Publishing release workflow), `08f87ea` (M6: exceptions,
 try/except/raise, and floor division), `90ca2a4` (docs-only: mark M5
 committed in HANDOFF.md), `69df8ad` (M5: classes, single inheritance, and
 virtual dispatch), `411acf9` (M4: containers and comprehensions),

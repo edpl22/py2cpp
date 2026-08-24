@@ -16,6 +16,18 @@ changes to the supported Python subset or generated C++ shape.
   under `examples/`.
 - Issue templates, `CODE_OF_CONDUCT.md`, and this changelog.
 - A PyPI Trusted Publishing release workflow.
+- `USAGE.md`, a standalone install/CLI-only reference separate from
+  `README.md`.
+- `README.pt-BR.md`, a Portuguese (Brazil) translation of `README.md`.
+
+### Verified
+
+- CI (`ci.yml`) confirmed green on all 12 matrix jobs (ubuntu/macos/
+  windows × Python 3.10–3.13) with the new cross-compiler steps —
+  `clang++` and MSVC's `cl` are now actually exercised by the golden
+  tests in CI, not just skipped.
+- The release workflow's packaging job (sdist + wheel build,
+  `twine check`) confirmed green in CI.
 
 ## [0.1.0] - Unreleased
 

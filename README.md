@@ -1,5 +1,7 @@
 # py2cpp
 
+*Read this in other languages: [Português (Brasil)](README.pt-BR.md).*
+
 This is a vibe-coded project motivated by curiosity of the capabilities of AI.
 
 A transpiler that translates a well-defined subset of **Python 3.10+** into
@@ -7,17 +9,20 @@ readable, compilable **C++17**. py2cpp is itself written entirely in Python;
 C++ is only ever an output format, plus a small header-only compatibility
 runtime (`pyrt`) linked by generated code.
 
-> **Status:** M0–M6 complete; M7 (v0.1.0 polish) in progress. py2cpp
-> compiles functions with annotated `int`/`bool`/`str`/`list`/`dict`/
-> `set`/`tuple`, arithmetic (including overflow-checked `//`), comparisons,
-> `and`/`or`/`not`, local variables, `if`/`elif`/`else`, `while`,
+> **Status:** M0–M7 complete (v0.1.0 polish landed; not yet published to
+> PyPI — see [Installation](#installation)). py2cpp compiles functions
+> with annotated `int`/`bool`/`str`/`list`/`dict`/`set`/`tuple`,
+> arithmetic (including overflow-checked `//`), comparisons, `and`/`or`/
+> `not`, local variables, `if`/`elif`/`else`, `while`,
 > `for ... in range(...)` and `for ... in <container>`, string
 > concatenation, f-strings, list/dict/set/tuple literals, indexing, list
 > comprehensions, classes with single inheritance and virtual dispatch,
 > and `try`/`except`/`raise` against a curated exception hierarchy — all
-> to compilable, warning-clean C++17. Container mutation
-> (`.append(...)`, `d[k] = v`), `in`/`not in`, dict/set comprehensions,
-> tuple iteration/unpacking, and user-defined exception subclasses aren't
+> to compilable, warning-clean C++17, verified across
+> ubuntu/macos/windows × Python 3.10–3.13 in CI, and against `g++`,
+> `clang++`, and MSVC's `cl`. Container mutation (`.append(...)`,
+> `d[k] = v`), `in`/`not in`, dict/set comprehensions, tuple
+> iteration/unpacking, and user-defined exception subclasses aren't
 > supported yet. See [Restrictions](#restrictions) and the roadmap below
 > for what's not there yet.
 
@@ -86,6 +91,9 @@ g++ -std=c++17 build/classify.cpp -o build/classify
 ./build/classify
 ```
 
+For just the install and CLI instructions, without any of the project
+background on this page, see [`USAGE.md`](USAGE.md).
+
 See [`examples/`](examples/) for more: [`strings.py`](examples/strings.py),
 [`containers.py`](examples/containers.py), [`classes.py`](examples/classes.py),
 and [`exceptions.py`](examples/exceptions.py) each focus on one area of the
@@ -136,7 +144,7 @@ template if one of them is blocking you.
 | M4 | Containers (`list`/`dict`/`set`/`tuple`) and comprehensions — **done** |
 | M5 | Classes and single inheritance — **done** |
 | M6 | Exceptions — **done** |
-| M7 | v0.1.0 polish: docs, examples, cross-compiler CI, packaging — in progress |
+| M7 | v0.1.0 polish: docs, examples, cross-compiler CI, packaging — **done** |
 
 ## Contributing
 
